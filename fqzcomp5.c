@@ -1447,6 +1447,7 @@ typedef struct {
     int both_strands;
     uint32_t blk_size;
     int nthread;
+    int plus_name;               // output name on third line (+name)
 } opts;
 
 typedef struct {
@@ -2568,17 +2569,23 @@ int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *
     return -1;
 }
 
-int output_fastq(FILE *out_fp, fastq *fq) {
+int output_fastq(FILE *out_fp, fastq *fq, int plus_name) {
     char *np = fq->name_buf;
     char *sp = fq->seq_buf;
     char *qp = fq->qual_buf;
 
 #if 1
     // A bit faster sometimes.
+    // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
+    if (plus_name)
+        len += fq->name_len + fq->num_records;
     char *buf = malloc(len), *cp = buf;
 
     for (int i = 0; i < fq->num_records; i++) {
+	char *name_start = np;  // save start of name for third line
 	*cp++ = '@';
 	while ((*cp++ = *np++))
 	    ;
@@ -2588,7 +2595,15 @@ int output_fastq(FILE *out_fp, fastq *fq) {
 	sp += fq->len[i];
 	*cp++ = '\n';
 	*cp++ = '+';
-	*cp++ = '\n';
+	if (plus_name) {
+	    // Copy name to third line
+	    char *tmp = name_start;
+	    while ((*cp++ = *tmp++))
+		;
+	    *--cp = '\n'; cp++;
+	} else {
+	    *cp++ = '\n';
+	}
 	memcpy(cp, qp, fq->len[i]);
 	cp += fq->len[i];
 	qp += fq->len[i];
@@ -2598,8 +2613,14 @@ int output_fastq(FILE *out_fp, fastq *fq) {
     free(buf);
 #else
     for (int i = 0; i < fq->num_records; i++) {
-	fprintf(out_fp, "@%s\n%.*s\n+\n%.*s\n",
-		np, fq->len[i], sp, fq->len[i], qp);
+	if (plus_name) {
+	    char *name_copy = np;
+	    fprintf(out_fp, "@%s\n%.*s\n+%s\n%.*s\n",
+		    np, fq->len[i], sp, name_copy, fq->len[i], qp);
+	} else {
+	    fprintf(out_fp, "@%s\n%.*s\n+\n%.*s\n",
+		    np, fq->len[i], sp, fq->len[i], qp);
+	}
 	np += strlen(np)+1;
 	sp += fq->len[i];
 	qp += fq->len[i];
@@ -2609,16 +2630,22 @@ int output_fastq(FILE *out_fp, fastq *fq) {
     return 0;
 }
 
-int output_fastq_gzip(gzFile out_fp, fastq *fq) {
+int output_fastq_gzip(gzFile out_fp, fastq *fq, int plus_name) {
     char *np = fq->name_buf;
     char *sp = fq->seq_buf;
     char *qp = fq->qual_buf;
 
     // Build buffer and write at once
+    // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
+    if (plus_name)
+        len += fq->name_len + fq->num_records;
     char *buf = malloc(len), *cp = buf;
 
     for (int i = 0; i < fq->num_records; i++) {
+        char *name_start = np;  // save start of name for third line
         *cp++ = '@';
         while ((*cp++ = *np++))
             ;
@@ -2628,7 +2655,15 @@ int output_fastq_gzip(gzFile out_fp, fastq *fq) {
         sp += fq->len[i];
         *cp++ = '\n';
         *cp++ = '+';
-        *cp++ = '\n';
+        if (plus_name) {
+            // Copy name to third line
+            char *tmp = name_start;
+            while ((*cp++ = *tmp++))
+                ;
+            *--cp = '\n'; cp++;
+        } else {
+            *cp++ = '\n';
+        }
         memcpy(cp, qp, fq->len[i]);
         cp += fq->len[i];
         qp += fq->len[i];
@@ -2641,13 +2676,18 @@ int output_fastq_gzip(gzFile out_fp, fastq *fq) {
 }
 
 // Output interleaved FASTQ to two separate files (deinterleaving)
-int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq) {
+int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq, int plus_name) {
     char *np = fq->name_buf;
     char *sp = fq->seq_buf;
     char *qp = fq->qual_buf;
 
     // Build separate buffers for R1 and R2
+    // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
+    if (plus_name)
+        len += fq->name_len + fq->num_records;
     char *buf1 = malloc(len);
     char *buf2 = malloc(len);
     if (!buf1 || !buf2) {
@@ -2664,6 +2704,7 @@ int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq) {
         char **cpp = (fq->flag[i] & FQZ_FREAD2) ? &cp2 : &cp1;
         char *cp = *cpp;
         
+        char *name_start = np;  // save start of name for third line
         *cp++ = '@';
         while ((*cp++ = *np++))
             ;
@@ -2673,7 +2714,15 @@ int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq) {
         sp += fq->len[i];
         *cp++ = '\n';
         *cp++ = '+';
-        *cp++ = '\n';
+        if (plus_name) {
+            // Copy name to third line
+            char *tmp = name_start;
+            while ((*cp++ = *tmp++))
+                ;
+            *--cp = '\n'; cp++;
+        } else {
+            *cp++ = '\n';
+        }
         memcpy(cp, qp, fq->len[i]);
         cp += fq->len[i];
         qp += fq->len[i];
@@ -2691,13 +2740,18 @@ int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq) {
 }
 
 // Output interleaved FASTQ to two separate gzipped files (deinterleaving)
-int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq) {
+int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq, int plus_name) {
     char *np = fq->name_buf;
     char *sp = fq->seq_buf;
     char *qp = fq->qual_buf;
 
     // Build separate buffers for R1 and R2
+    // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
+    if (plus_name)
+        len += fq->name_len + fq->num_records;
     char *buf1 = malloc(len);
     char *buf2 = malloc(len);
     if (!buf1 || !buf2) {
@@ -2714,6 +2768,7 @@ int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq) {
         char **cpp = (fq->flag[i] & FQZ_FREAD2) ? &cp2 : &cp1;
         char *cp = *cpp;
         
+        char *name_start = np;  // save start of name for third line
         *cp++ = '@';
         while ((*cp++ = *np++))
             ;
@@ -2723,7 +2778,15 @@ int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq) {
         sp += fq->len[i];
         *cp++ = '\n';
         *cp++ = '+';
-        *cp++ = '\n';
+        if (plus_name) {
+            // Copy name to third line
+            char *tmp = name_start;
+            while ((*cp++ = *tmp++))
+                ;
+            *--cp = '\n'; cp++;
+        } else {
+            *cp++ = '\n';
+        }
         memcpy(cp, qp, fq->len[i]);
         cp += fq->len[i];
         qp += fq->len[i];
@@ -2800,7 +2863,7 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 		    end = 1;
 		} else {
 		    append_timings(t, &j->t, arg->verbose);
-		    output_fastq(out_fp, j->fq);
+		    output_fastq(out_fp, j->fq, arg->plus_name);
 		    fastq_free(j->fq);
 		}
 		hts_tpool_delete_result(r, 1);
@@ -2842,7 +2905,7 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 	    end = 1;
 	} else {
 	    append_timings(t, &j->t, arg->verbose);
-	    output_fastq(out_fp, j->fq);
+	    output_fastq(out_fp, j->fq, arg->plus_name);
 	    fastq_free(j->fq);
 	}
 	hts_tpool_delete_result(r, 1);
@@ -2906,7 +2969,7 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
                     end = 1;
                 } else {
                     append_timings(t, &j->t, arg->verbose);
-                    output_fastq_gzip(out_fp, j->fq);
+                    output_fastq_gzip(out_fp, j->fq, arg->plus_name);
                     fastq_free(j->fq);
                 }
                 hts_tpool_delete_result(r, 1);
@@ -2916,7 +2979,7 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
         t->nblock++;
         fastq *fq = decode_block(comp, c_len, t);
 
-        output_fastq_gzip(out_fp, fq);
+        output_fastq_gzip(out_fp, fq, arg->plus_name);
 
         fastq_free(fq);
         free(comp);
@@ -2936,7 +2999,7 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
             end = 1;
         } else {
             append_timings(t, &j->t, arg->verbose);
-            output_fastq_gzip(out_fp, j->fq);
+            output_fastq_gzip(out_fp, j->fq, arg->plus_name);
             fastq_free(j->fq);
         }
         hts_tpool_delete_result(r, 1);
@@ -3001,7 +3064,7 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
                     end = 1;
                 } else {
                     append_timings(t, &j->t, arg->verbose);
-                    output_fastq_deinterleaved(out_fp1, out_fp2, j->fq);
+                    output_fastq_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
                     fastq_free(j->fq);
                 }
                 hts_tpool_delete_result(r, 1);
@@ -3011,7 +3074,7 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
         t->nblock++;
         fastq *fq = decode_block(comp, c_len, t);
 
-        output_fastq_deinterleaved(out_fp1, out_fp2, fq);
+        output_fastq_deinterleaved(out_fp1, out_fp2, fq, arg->plus_name);
 
         free(comp);
         fastq_free(fq);
@@ -3031,7 +3094,7 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
             end = 1;
         } else {
             append_timings(t, &j->t, arg->verbose);
-            output_fastq_deinterleaved(out_fp1, out_fp2, j->fq);
+            output_fastq_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
             fastq_free(j->fq);
         }
         hts_tpool_delete_result(r, 1);
@@ -3096,7 +3159,7 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
                     end = 1;
                 } else {
                     append_timings(t, &j->t, arg->verbose);
-                    output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq);
+                    output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
                     fastq_free(j->fq);
                 }
                 hts_tpool_delete_result(r, 1);
@@ -3106,7 +3169,7 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
         t->nblock++;
         fastq *fq = decode_block(comp, c_len, t);
 
-        output_fastq_gzip_deinterleaved(out_fp1, out_fp2, fq);
+        output_fastq_gzip_deinterleaved(out_fp1, out_fp2, fq, arg->plus_name);
 
         free(comp);
         fastq_free(fq);
@@ -3126,7 +3189,7 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
             end = 1;
         } else {
             append_timings(t, &j->t, arg->verbose);
-            output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq);
+            output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
             fastq_free(j->fq);
         }
         hts_tpool_delete_result(r, 1);
@@ -3149,6 +3212,7 @@ void usage(FILE *fp) {
     fprintf(fp, "Usage: fqzcomp5 [options] -d [input.fqz5  [output_R1.fastq output_R2.fastq]]\n");
     fprintf(fp, "\nOptions:\n");
     fprintf(fp, "    -d            Decompress\n");
+    fprintf(fp, "    -p            Output name on third line (+name instead of +)\n");
     fprintf(fp, "    -t INT        Number of threads.  Defaults to 4\n");
     fprintf(fp, "    -b SIZE       Specify block size. May use K, M and G sufixes\n");
     fprintf(fp, "    -v            Increase verbostity\n");
@@ -3199,6 +3263,7 @@ int main(int argc, char **argv) {
 	.verbose = 0,
 	.blk_size = BLK_SIZE,
 	.nthread = 4,
+	.plus_name = 0,  // don't output name on third line by default
     };
 
 #ifdef _WIN32
@@ -3210,7 +3275,7 @@ int main(int argc, char **argv) {
     extern int optind;
     int opt;
 
-    while ((opt = getopt(argc, argv, "dq:Q:b:x:Bs:S:vn:N:Vt:h13579")) != -1) {
+    while ((opt = getopt(argc, argv, "dq:Q:b:x:Bs:S:vn:N:Vt:ph13579")) != -1) {
 	switch (opt) {
 	case 't':
 	    arg.nthread = atoi(optarg);
@@ -3228,6 +3293,10 @@ int main(int argc, char **argv) {
 
 	case 'd':
 	    decomp = 1;
+	    break;
+
+	case 'p':
+	    arg.plus_name = 1;
 	    break;
 
 	case 'B':
