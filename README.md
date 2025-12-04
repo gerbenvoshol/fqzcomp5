@@ -233,19 +233,35 @@ TO DO
   - Decompress to gzipped FASTQ: `fqzcomp5 -d input.fqz5 output.fastq.gz`
   - Works with stdin/stdout: `zcat input.fastq.gz | fqzcomp5 > output.fqz5`
 
-- Accept pairs of fastq files and do automatic interleaving.  This
+- ~~Accept pairs of fastq files and do automatic interleaving.  This
   helps improve compression of read-names through deduplication and
-  may also help sequence compression for short inserts.
+  may also help sequence compression for short inserts.~~
+
+  **DONE**: Paired-end FASTQ files are now supported with automatic interleaving
+  during compression and deinterleaving during decompression. This significantly
+  improves compression ratios for read names through deduplication.
+  
+  Examples:
+  - Compress paired files: `fqzcomp5 input_R1.fastq input_R2.fastq output.fqz5`
+  - Decompress to paired files: `fqzcomp5 -d input.fqz5 output_R1.fastq output_R2.fastq`
+  - Also works with gzipped files: `fqzcomp5 input_R1.fastq.gz input_R2.fastq.gz output.fqz5`
+
+- ~~Support the third line of "+name" where "name" is a duplicate of
+  "@name".  This is rarely used, but could be supported by a simple
+  flag.~~
+
+  **DONE**: The `-p` flag enables outputting the read name on the third line
+  (e.g., `+name` instead of just `+`). While this format variant is rarely used,
+  it's now supported for compatibility.
+  
+  Example:
+  - Decompress with names on third line: `fqzcomp5 -d -p input.fqz5 output.fastq`
 
 - Improve file format.  A proper magic number, better blocking
   structure.
 
 - Implement (coarse) random access capability.  This is already
   supported by the format, but lacks the necessary index.
-
-- Support the third line of "+name" where "name" is a duplicate of
-  "@name".  This is rarely used, but could be supported by a simple
-  flag.
 
 - Push more changes back into htscodecs upstream.  For now we're using
   out own fork.
