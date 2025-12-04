@@ -43,6 +43,176 @@ Compared to fqzcomp-4:
   (only odd numbers implemented at the moment).  For example -9 has
   the most number of alternatives for fqzcomp_qual models.
 
+Building and Installation
+==========================
+
+Dependencies
+------------
+
+Fqzcomp5 requires the following dependencies:
+
+- **htscodecs** - High-throughput sequencing codecs library (included as a git submodule)
+- **zlib** - Compression library for gzipped FASTQ support
+- **libbz2** - BZip2 compression library
+- **autoconf** and **libtool** - Build tools (for building htscodecs)
+- **gcc** or compatible C compiler
+
+On Debian/Ubuntu systems, install dependencies with:
+```bash
+sudo apt-get install build-essential autoconf libtool zlib1g-dev libbz2-dev
+```
+
+On Red Hat/Fedora systems:
+```bash
+sudo dnf install gcc autoconf libtool zlib-devel bzip2-devel
+```
+
+Or for older systems using yum:
+```bash
+sudo yum install gcc autoconf libtool zlib-devel bzip2-devel
+```
+
+Building from Source
+--------------------
+
+1. **Clone the repository with submodules:**
+   ```bash
+   git clone --recursive https://github.com/gerbenvoshol/fqzcomp5.git
+   cd fqzcomp5
+   ```
+
+   If you already cloned without `--recursive`, initialize the submodule:
+   ```bash
+   git submodule update --init --recursive
+   ```
+
+2. **Build the project:**
+   ```bash
+   make
+   ```
+
+   The Makefile will automatically:
+   - Build the htscodecs library from the submodule
+   - Compile fqzcomp5 and link it with htscodecs
+   - Create the `fqzcomp5` binary in the current directory
+
+3. **Run tests:**
+   ```bash
+   ./test.sh
+   ```
+
+About htscodecs Integration
+----------------------------
+
+Fqzcomp5 uses the [htscodecs library](https://github.com/jkbonfield/htscodecs) as a git submodule. 
+This library provides the core compression codecs including:
+
+- **rANS** (Asymmetric Numeral Systems) entropy encoders - both 4x8 and 4x16 variants with bit-packing/RLE
+- **Adaptive arithmetic coding** for high-compression scenarios
+- **FQZComp quality compression** - specialized quality score compression
+- **Name tokenizer** - efficient read name compression
+- **SIMD optimizations** - SSE4, AVX2, and AVX512 support for faster encoding/decoding
+
+The htscodecs submodule is configured to use a specific branch (`fqz_seq_u32`) that includes 
+enhancements for sequence-based quality compression contexts, which significantly improve 
+compression ratios for ONT and PacBio data.
+
+The library is built automatically during the make process and statically linked into fqzcomp5, 
+so no separate installation of htscodecs is required.
+
+Usage
+=====
+
+Basic Usage
+-----------
+
+Fqzcomp5 supports compression and decompression of FASTQ files, with automatic handling of 
+gzipped input/output and paired-end files.
+
+**Compress a single FASTQ file:**
+```bash
+./fqzcomp5 input.fastq output.fqz5
+```
+
+**Decompress:**
+```bash
+./fqzcomp5 -d input.fqz5 output.fastq
+```
+
+**Compress paired-end files (with automatic interleaving):**
+```bash
+./fqzcomp5 input_R1.fastq input_R2.fastq output.fqz5
+```
+
+**Decompress to paired-end files:**
+```bash
+./fqzcomp5 -d input.fqz5 output_R1.fastq output_R2.fastq
+```
+
+**Gzipped files are handled transparently:**
+```bash
+# Compress gzipped FASTQ
+./fqzcomp5 input.fastq.gz output.fqz5
+
+# Decompress to gzipped FASTQ
+./fqzcomp5 -d input.fqz5 output.fastq.gz
+
+# Paired-end with gzipped files
+./fqzcomp5 input_R1.fastq.gz input_R2.fastq.gz output.fqz5
+```
+
+**Using stdin/stdout:**
+```bash
+# Compress from stdin
+cat input.fastq | ./fqzcomp5 > output.fqz5
+
+# Decompress to stdout
+./fqzcomp5 -d input.fqz5 | less
+
+# Pipeline example
+zcat input.fastq.gz | ./fqzcomp5 | ./fqzcomp5 -d > output.fastq
+```
+
+Compression Levels
+------------------
+
+Use `-1` through `-9` to control compression level (odd numbers only):
+
+- **`-1`**: Fastest compression using basic bit-packing and rANS
+- **`-3`**: Fast compression with rANS/LZP
+- **`-5`**: Balanced compression with Markov models (default)
+- **`-7`**: High compression with adaptive models
+- **`-9`**: Maximum compression (slowest)
+
+```bash
+# Fast compression for quick archival
+./fqzcomp5 -1 input.fastq output.fqz5
+
+# Maximum compression for long-term storage
+./fqzcomp5 -9 input.fastq output.fqz5
+```
+
+Advanced Options
+----------------
+
+```bash
+# Use more threads (default is 4)
+./fqzcomp5 -t 8 input.fastq output.fqz5
+
+# Custom block size (default varies by compression level)
+./fqzcomp5 -b 500M input.fastq output.fqz5
+
+# Include read name on third line (+name instead of +)
+./fqzcomp5 -d -p input.fqz5 output.fastq
+
+# Adjust verbosity
+./fqzcomp5 -v input.fastq output.fqz5  # More verbose
+./fqzcomp5 -V input.fastq output.fqz5  # Silent mode
+
+# Fine-tune encoding methods (advanced users)
+./fqzcomp5 -n 2 -s 1 -q 1 input.fastq output.fqz5
+```
+
 File Format
 ===========
 
@@ -321,7 +491,17 @@ TO DO
   
   See the "File Format" section above for details.
 
-- Push more changes back into htscodecs upstream.  For now we're using
-  out own fork.
+- ~~Push more changes back into htscodecs upstream.  For now we're using
+  our own fork.~~
+
+  **DONE**: The htscodecs library is now properly integrated as a git submodule,
+  using the `fqz_seq_u32` branch from the upstream repository 
+  (https://github.com/jkbonfield/htscodecs). This branch includes:
+  - Support for using sequence bases as quality compression context
+  - SMALL_MODEL and SIMPLE_MODEL optimizations
+  - All the necessary enhancements for fqzcomp5
+  
+  The submodule configuration is in `.gitmodules` and the library is automatically
+  built during the make process. See the "Building and Installation" section for details.
 
 - Fuzz testing.
