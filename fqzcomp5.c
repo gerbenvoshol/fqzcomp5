@@ -573,11 +573,24 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
             
             if (nr >= ar) {
                 ar = ar*1.5 + 10000;
-                fq->name = realloc(fq->name, ar*sizeof(char *));
-                fq->seq  = realloc(fq->seq , ar*sizeof(char *));
-                fq->qual = realloc(fq->qual, ar*sizeof(char *));
-                fq->len  = realloc(fq->len,  ar*sizeof(int));
-                fq->flag = realloc(fq->flag, ar*sizeof(int));
+                int *new_name = realloc(fq->name, ar*sizeof(char *));
+                int *new_seq  = realloc(fq->seq , ar*sizeof(char *));
+                int *new_qual = realloc(fq->qual, ar*sizeof(char *));
+                unsigned int *new_len  = realloc(fq->len,  ar*sizeof(int));
+                unsigned int *new_flag = realloc(fq->flag, ar*sizeof(int));
+                
+                if (!new_name || !new_seq || !new_qual || !new_len || !new_flag) {
+                    fprintf(stderr, "Failed to reallocate arrays for interleaved reads\n");
+                    kseq_destroy(seq1);
+                    kseq_destroy(seq2);
+                    goto err;
+                }
+                
+                fq->name = new_name;
+                fq->seq  = new_seq;
+                fq->qual = new_qual;
+                fq->len  = new_len;
+                fq->flag = new_flag;
             }
             
             // Store name (and comment if present)
@@ -1922,11 +1935,13 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t) {
             int name_len = strlen(np);
             if (name_len > 1 && np[name_len-1] == '2' && np[name_len-2] == '/')
                 flag = FQZ_FREAD2;
-            if (last_name >= 0 &&
+            else if (last_name >= 0 &&
                 strcmp(fq->name_buf + fq->name[i], fq->name_buf + last_name) == 0)
                 flag = FQZ_FREAD2;
             fq->flag[i] = flag;
-            last_name = fq->name[i];
+            
+            if (!flag)
+                last_name = fq->name[i];
             
             name_i += name_len + 1;  // +1 for null terminator
             np += name_len + 1;
@@ -2633,8 +2648,16 @@ int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq) {
 
     // Build separate buffers for R1 and R2
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
-    char *buf1 = malloc(len), *cp1 = buf1;
-    char *buf2 = malloc(len), *cp2 = buf2;
+    char *buf1 = malloc(len);
+    char *buf2 = malloc(len);
+    if (!buf1 || !buf2) {
+        free(buf1);
+        free(buf2);
+        fprintf(stderr, "Failed to allocate memory for deinterleaving\n");
+        return -1;
+    }
+    char *cp1 = buf1;
+    char *cp2 = buf2;
 
     for (int i = 0; i < fq->num_records; i++) {
         // Determine which buffer to use
@@ -2675,8 +2698,16 @@ int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq) {
 
     // Build separate buffers for R1 and R2
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
-    char *buf1 = malloc(len), *cp1 = buf1;
-    char *buf2 = malloc(len), *cp2 = buf2;
+    char *buf1 = malloc(len);
+    char *buf2 = malloc(len);
+    if (!buf1 || !buf2) {
+        free(buf1);
+        free(buf2);
+        fprintf(stderr, "Failed to allocate memory for deinterleaving\n");
+        return -1;
+    }
+    char *cp1 = buf1;
+    char *cp2 = buf2;
 
     for (int i = 0; i < fq->num_records; i++) {
         // Determine which buffer to use
@@ -3591,6 +3622,12 @@ int main(int argc, char **argv) {
             if ((in1_is_gz && in2_is_gz) || (!in1_is_gz && !in2_is_gz)) {
                 gzFile fp1 = in1_is_gz ? gz_in_fp1 : gzdopen(fileno(in_fp1), "rb");
                 gzFile fp2 = in2_is_gz ? gz_in_fp2 : gzdopen(fileno(in_fp2), "rb");
+                if (!fp1 || !fp2) {
+                    fprintf(stderr, "Error: Failed to open input files for reading\n");
+                    if (fp1) gzclose(fp1);
+                    if (fp2) gzclose(fp2);
+                    exit(1);
+                }
                 if (encode_interleaved(fp1, fp2, out_fp1, gp, &arg, &t) < 0)
                     exit(1);
                 // Close the gzdopen handles if they were created
