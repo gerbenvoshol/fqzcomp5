@@ -418,14 +418,27 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
             fq->flag = realloc(fq->flag, ar*sizeof(int));
         }
         
-        // Store name
+        // Store name (and comment if present)
         fq->name[nr] = name_i;
-        if (name_i + seq->name.l + 1 >= name_sz) {
-            name_sz = name_sz * 1.5 + seq->name.l + 1000;
+        int total_name_len = seq->name.l;
+        if (seq->comment.l > 0) {
+            total_name_len += 1 + seq->comment.l; // space + comment
+        }
+        
+        if (name_i + total_name_len + 1 >= name_sz) {
+            name_sz = name_sz * 1.5 + total_name_len + 1000;
             name_buf = fq->name_buf = realloc(fq->name_buf, name_sz);
         }
         memcpy(name_buf + name_i, seq->name.s, seq->name.l);
         name_i += seq->name.l;
+        
+        // Add comment if present
+        if (seq->comment.l > 0) {
+            name_buf[name_i++] = ' ';
+            memcpy(name_buf + name_i, seq->comment.s, seq->comment.l);
+            name_i += seq->comment.l;
+        }
+        
         name_buf[name_i++] = 0;
         
         int flag = 0;
