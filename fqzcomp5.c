@@ -2499,6 +2499,17 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
            timings *t) {
     int rans_methods = (1<<RANS0) | (1<<RANS1) | (1<<RANS129) | (1<<RANS193);
 
+    // Write file header with magic number
+    if (write_header(out_fp) < 0)
+        return -1;
+    
+    // Initialize index
+    fqz5_index idx = {0};
+    uint32_t idx_capacity = 1000;
+    idx.entries = calloc(idx_capacity, sizeof(*idx.entries));
+    if (!idx.entries)
+        return -1;
+
     // Name
     if (arg->nauto) {
         method_avail[SEC_NAME] = arg->nauto;
@@ -2557,8 +2568,10 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
     while (!eof_flag) {
         fastq *fq = load_seqs_kseq(in_fp, arg->blk_size, &eof_flag);
 
-        if (!fq)
+        if (!fq) {
+            free(idx.entries);
             return -1;
+        }
 
         if (!fq->num_records) {
             fastq_free(fq);
@@ -2573,6 +2586,8 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
         memset(&j->t, 0, sizeof(j->t));
         j->fq = fq;
         j->eof = 0;
+        j->usize = fq->seq_len;  // Total uncompressed bases
+        j->nrecords = fq->num_records;
 
         int ret = -1;
         while (ret == -1) {
@@ -2597,7 +2612,23 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
                         end = 1;
                     } else {
                         append_timings(t, &jr->t, arg->verbose);
-                        fwrite(&jr->clen, 1, 4, out_fp);
+                        
+                        // Track block offset for index
+                        if (idx.nblocks >= idx_capacity) {
+                            idx_capacity *= 2;
+                            index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+                            if (!new_entries) {
+                                free(idx.entries);
+                                goto err;
+                            }
+                            idx.entries = new_entries;
+                        }
+                        idx.entries[idx.nblocks].offset = ftell(out_fp);
+                        idx.entries[idx.nblocks].usize = jr->usize;
+                        idx.entries[idx.nblocks].nrecords = jr->nrecords;
+                        idx.nblocks++;
+                        
+                        // Block now includes block_size at the start, no need for extra length
                         fwrite(jr->comp, 1, jr->clen, out_fp);
                         free(jr->comp);
                     }
@@ -2608,8 +2639,24 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 #else
         uint32_t clen;
         t->nblock++;
+        
+        // Track block offset for index
+        if (idx.nblocks >= idx_capacity) {
+            idx_capacity *= 2;
+            index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+            if (!new_entries) {
+                free(idx.entries);
+                return -1;
+            }
+            idx.entries = new_entries;
+        }
+        idx.entries[idx.nblocks].offset = ftell(out_fp);
+        idx.entries[idx.nblocks].usize = fq->seq_len;
+        idx.entries[idx.nblocks].nrecords = fq->num_records;
+        idx.nblocks++;
+        
         char *out = encode_block(gp, arg, fq, t, &clen);
-        fwrite(&clen, 1, 4, out_fp);
+        // Block now includes block_size at the start, no need for extra length
         fwrite(out, 1, clen, out_fp);
         free(out);
 
@@ -2625,14 +2672,32 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 
     // End of input, so work through remaining results
     while (!end && (r = hts_tpool_next_result_wait(q))) {
-        enc_dec_job *j = hts_tpool_result_data(r);
-        if (j->eof) {
+        enc_dec_job *jr = hts_tpool_result_data(r);
+        if (jr->eof) {
             end = 1;
         } else {
-            append_timings(t, &j->t, arg->verbose);
-            fwrite(&j->clen, 1, 4, out_fp);
-            fwrite(j->comp, 1, j->clen, out_fp);
-            free(j->comp);
+            append_timings(t, &jr->t, arg->verbose);
+            
+            // Track block offset for index
+            if (idx.nblocks >= idx_capacity) {
+                idx_capacity *= 2;
+                index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+                if (!new_entries) {
+                    free(idx.entries);
+                    hts_tpool_process_destroy(q);
+                    hts_tpool_destroy(p);
+                    return -1;
+                }
+                idx.entries = new_entries;
+            }
+            idx.entries[idx.nblocks].offset = ftell(out_fp);
+            idx.entries[idx.nblocks].usize = jr->usize;
+            idx.entries[idx.nblocks].nrecords = jr->nrecords;
+            idx.nblocks++;
+            
+            // Block now includes block_size at the start, no need for extra length
+            fwrite(jr->comp, 1, jr->clen, out_fp);
+            free(jr->comp);
         }
         hts_tpool_delete_result(r, 1);
     }
@@ -2640,9 +2705,23 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
     hts_tpool_destroy(p);
 #endif
 
+    // Write index at end of file
+    uint64_t index_offset = ftell(out_fp);
+    if (write_index(out_fp, &idx) < 0) {
+        free(idx.entries);
+        return -1;
+    }
+    
+    // Update header with index offset
+    fseek(out_fp, FQZ5_MAGIC_LEN, SEEK_SET);
+    fwrite(&index_offset, 1, 8, out_fp);
+    fseek(out_fp, 0, SEEK_END);
+    
+    free(idx.entries);
     return 0;
 
  err:
+    free(idx.entries);
     return -1;
 }
 
@@ -2650,6 +2729,17 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *gp, opts *arg,
            timings *t) {
     int rans_methods = (1<<RANS0) | (1<<RANS1) | (1<<RANS129) | (1<<RANS193);
+
+    // Write file header with magic number
+    if (write_header(out_fp) < 0)
+        return -1;
+    
+    // Initialize index
+    fqz5_index idx = {0};
+    uint32_t idx_capacity = 1000;
+    idx.entries = calloc(idx_capacity, sizeof(*idx.entries));
+    if (!idx.entries)
+        return -1;
 
     // Name
     if (arg->nauto) {
@@ -2709,8 +2799,10 @@ int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *
     while (!eof_flag) {
         fastq *fq = load_seqs_interleaved(in_fp1, in_fp2, arg->blk_size, &eof_flag);
 
-        if (!fq)
+        if (!fq) {
+            free(idx.entries);
             return -1;
+        }
 
         if (!fq->num_records) {
             fastq_free(fq);
@@ -2725,6 +2817,8 @@ int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *
         memset(&j->t, 0, sizeof(j->t));
         j->fq = fq;
         j->eof = 0;
+        j->usize = fq->seq_len;  // Total uncompressed bases
+        j->nrecords = fq->num_records;
 
         int ret = -1;
         while (ret == -1) {
@@ -2749,7 +2843,23 @@ int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *
                         end = 1;
                     } else {
                         append_timings(t, &jr->t, arg->verbose);
-                        fwrite(&jr->clen, 1, 4, out_fp);
+                        
+                        // Track block offset for index
+                        if (idx.nblocks >= idx_capacity) {
+                            idx_capacity *= 2;
+                            index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+                            if (!new_entries) {
+                                free(idx.entries);
+                                goto err;
+                            }
+                            idx.entries = new_entries;
+                        }
+                        idx.entries[idx.nblocks].offset = ftell(out_fp);
+                        idx.entries[idx.nblocks].usize = jr->usize;
+                        idx.entries[idx.nblocks].nrecords = jr->nrecords;
+                        idx.nblocks++;
+                        
+                        // Block now includes block_size at the start, no need for extra length
                         fwrite(jr->comp, 1, jr->clen, out_fp);
                         free(jr->comp);
                     }
@@ -2760,8 +2870,24 @@ int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *
 #else
         uint32_t clen;
         t->nblock++;
+        
+        // Track block offset for index
+        if (idx.nblocks >= idx_capacity) {
+            idx_capacity *= 2;
+            index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+            if (!new_entries) {
+                free(idx.entries);
+                return -1;
+            }
+            idx.entries = new_entries;
+        }
+        idx.entries[idx.nblocks].offset = ftell(out_fp);
+        idx.entries[idx.nblocks].usize = fq->seq_len;
+        idx.entries[idx.nblocks].nrecords = fq->num_records;
+        idx.nblocks++;
+        
         char *out = encode_block(gp, arg, fq, t, &clen);
-        fwrite(&clen, 1, 4, out_fp);
+        // Block now includes block_size at the start, no need for extra length
         fwrite(out, 1, clen, out_fp);
         free(out);
 
@@ -2782,7 +2908,25 @@ int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *
             end = 1;
         } else {
             append_timings(t, &jr->t, arg->verbose);
-            fwrite(&jr->clen, 1, 4, out_fp);
+            
+            // Track block offset for index
+            if (idx.nblocks >= idx_capacity) {
+                idx_capacity *= 2;
+                index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+                if (!new_entries) {
+                    free(idx.entries);
+                    hts_tpool_process_destroy(q);
+                    hts_tpool_destroy(p);
+                    return -1;
+                }
+                idx.entries = new_entries;
+            }
+            idx.entries[idx.nblocks].offset = ftell(out_fp);
+            idx.entries[idx.nblocks].usize = jr->usize;
+            idx.entries[idx.nblocks].nrecords = jr->nrecords;
+            idx.nblocks++;
+            
+            // Block now includes block_size at the start, no need for extra length
             fwrite(jr->comp, 1, jr->clen, out_fp);
             free(jr->comp);
         }
@@ -2792,9 +2936,23 @@ int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *
     hts_tpool_destroy(p);
 #endif
 
+    // Write index at end of file
+    uint64_t index_offset = ftell(out_fp);
+    if (write_index(out_fp, &idx) < 0) {
+        free(idx.entries);
+        return -1;
+    }
+    
+    // Update header with index offset
+    fseek(out_fp, FQZ5_MAGIC_LEN, SEEK_SET);
+    fwrite(&index_offset, 1, 8, out_fp);
+    fseek(out_fp, 0, SEEK_END);
+    
+    free(idx.entries);
     return 0;
 
  err:
+    free(idx.entries);
     return -1;
 }
 
@@ -3175,6 +3333,13 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 }
 
 int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
+    uint64_t index_offset;
+    int header_result = read_header(in_fp, &index_offset);
+    if (header_result < 0)
+        return -1;
+    // header_result == 1 means old format (no header), data starts at offset 0
+    // header_result == 0 means new format with header
+    
 #ifdef THREADED
     int n = arg->nthread, end = 0;
     hts_tpool *p = hts_tpool_init(n);
@@ -3184,17 +3349,34 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
 #endif
 
     for (;;) {
+        // Check if we've reached the index
+        uint64_t current_pos = ftell(in_fp);
+        if (index_offset > 0 && current_pos >= index_offset)
+            break;
+            
         // Load next compressed block
-        int i, c_len;
+        int i;
+        uint32_t block_size;
         unsigned char *comp;
 
-        // Total compressed size
-        if (fread(&c_len, 1, 4, in_fp) != 4)
+        // Read block size (first 4 bytes of block)
+        if (fread(&block_size, 1, 4, in_fp) != 4)
             break;
 
+        // Allocate buffer for entire block (including the block_size field we just read)
+        uint32_t c_len = block_size + 4;  // +4 for the block_size field itself
         comp = malloc(c_len);
-        if (fread(comp, 1, c_len, in_fp) != c_len)
+        if (!comp)
             return -1;
+        
+        // Store the block_size we already read at the start
+        *(uint32_t *)comp = block_size;
+        
+        // Read the rest of the block (block_size bytes)
+        if (fread(comp + 4, 1, block_size, in_fp) != block_size) {
+            free(comp);
+            return -1;
+        }
 
 #ifdef THREADED
         // Dispatch a job
@@ -3270,6 +3452,13 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
 
 // Decode with deinterleaving to two separate files
 int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, timings *t) {
+    uint64_t index_offset;
+    int header_result = read_header(in_fp, &index_offset);
+    if (header_result < 0)
+        return -1;
+    // header_result == 1 means old format (no header), data starts at offset 0
+    // header_result == 0 means new format with header
+    
 #ifdef THREADED
     int n = arg->nthread, end = 0;
     hts_tpool *p = hts_tpool_init(n);
@@ -3279,17 +3468,34 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
 #endif
 
     for (;;) {
+        // Check if we've reached the index
+        uint64_t current_pos = ftell(in_fp);
+        if (index_offset > 0 && current_pos >= index_offset)
+            break;
+            
         // Load next compressed block
-        int i, c_len;
+        int i;
+        uint32_t block_size;
         unsigned char *comp;
 
-        // Total compressed size
-        if (fread(&c_len, 1, 4, in_fp) != 4)
+        // Read block size (first 4 bytes of block)
+        if (fread(&block_size, 1, 4, in_fp) != 4)
             break;
 
+        // Allocate buffer for entire block (including the block_size field we just read)
+        uint32_t c_len = block_size + 4;  // +4 for the block_size field itself
         comp = malloc(c_len);
-        if (fread(comp, 1, c_len, in_fp) != c_len)
+        if (!comp)
             return -1;
+        
+        // Store the block_size we already read at the start
+        *(uint32_t *)comp = block_size;
+        
+        // Read the rest of the block (block_size bytes)
+        if (fread(comp + 4, 1, block_size, in_fp) != block_size) {
+            free(comp);
+            return -1;
+        }
 
 #ifdef THREADED
         // Dispatch a job
@@ -3365,6 +3571,13 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
 
 // Decode with deinterleaving to two separate gzipped files
 int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts *arg, timings *t) {
+    uint64_t index_offset;
+    int header_result = read_header(in_fp, &index_offset);
+    if (header_result < 0)
+        return -1;
+    // header_result == 1 means old format (no header), data starts at offset 0
+    // header_result == 0 means new format with header
+    
 #ifdef THREADED
     int n = arg->nthread, end = 0;
     hts_tpool *p = hts_tpool_init(n);
@@ -3374,17 +3587,34 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
 #endif
 
     for (;;) {
+        // Check if we've reached the index
+        uint64_t current_pos = ftell(in_fp);
+        if (index_offset > 0 && current_pos >= index_offset)
+            break;
+            
         // Load next compressed block
-        int i, c_len;
+        int i;
+        uint32_t block_size;
         unsigned char *comp;
 
-        // Total compressed size
-        if (fread(&c_len, 1, 4, in_fp) != 4)
+        // Read block size (first 4 bytes of block)
+        if (fread(&block_size, 1, 4, in_fp) != 4)
             break;
 
+        // Allocate buffer for entire block (including the block_size field we just read)
+        uint32_t c_len = block_size + 4;  // +4 for the block_size field itself
         comp = malloc(c_len);
-        if (fread(comp, 1, c_len, in_fp) != c_len)
+        if (!comp)
             return -1;
+        
+        // Store the block_size we already read at the start
+        *(uint32_t *)comp = block_size;
+        
+        // Read the rest of the block (block_size bytes)
+        if (fread(comp + 4, 1, block_size, in_fp) != block_size) {
+            free(comp);
+            return -1;
+        }
 
 #ifdef THREADED
         // Dispatch a job
