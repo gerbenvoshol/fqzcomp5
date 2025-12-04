@@ -2577,9 +2577,11 @@ int output_fastq(FILE *out_fp, fastq *fq, int plus_name) {
 #if 1
     // A bit faster sometimes.
     // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
+        len += fq->name_len + fq->num_records;
     char *buf = malloc(len), *cp = buf;
 
     for (int i = 0; i < fq->num_records; i++) {
@@ -2635,9 +2637,11 @@ int output_fastq_gzip(gzFile out_fp, fastq *fq, int plus_name) {
 
     // Build buffer and write at once
     // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
+        len += fq->name_len + fq->num_records;
     char *buf = malloc(len), *cp = buf;
 
     for (int i = 0; i < fq->num_records; i++) {
@@ -2679,9 +2683,11 @@ int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq, int plus
 
     // Build separate buffers for R1 and R2
     // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
+        len += fq->name_len + fq->num_records;
     char *buf1 = malloc(len);
     char *buf2 = malloc(len);
     if (!buf1 || !buf2) {
@@ -2741,9 +2747,11 @@ int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq, i
 
     // Build separate buffers for R1 and R2
     // Calculate buffer size - if plus_name, need space for name on third line
+    // Base: name_len (with nulls) + seq_len + qual_len + num_records*5 (for @,\n,\n,+,\n,\n per record)
+    // With plus_name: add name_len (names duplicated on line 3) + num_records (for safety)
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
+        len += fq->name_len + fq->num_records;
     char *buf1 = malloc(len);
     char *buf2 = malloc(len);
     if (!buf1 || !buf2) {
