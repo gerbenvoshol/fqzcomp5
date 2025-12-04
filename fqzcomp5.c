@@ -514,6 +514,181 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
     return NULL;
 }
 
+// Load interleaved sequences from two paired FASTQ files
+// Reads alternately from fp1 and fp2 to create an interleaved stream
+fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag) {
+    fastq *fq = calloc(1, sizeof(*fq));
+    if (!fq)
+        goto err;
+    
+    size_t name_sz = blk_size/10;
+    size_t seq_sz  = blk_size/2;
+    size_t qual_sz = blk_size/2;
+    char *name_buf = fq->name_buf = malloc(name_sz);
+    char *seq_buf  = fq->seq_buf  = malloc(seq_sz);
+    char *qual_buf = fq->qual_buf = malloc(qual_sz);
+    if (!name_buf || !seq_buf || !qual_buf)
+        goto err;
+    
+    int nr = 0, ar = 0;
+    int last_name = -1;
+    fq->fixed_len = -1;
+    
+    int name_i = 0, seq_i = 0, qual_i = 0;
+    int total_size = 0;
+    
+    kseq_t *seq1 = kseq_init(fp1);
+    kseq_t *seq2 = kseq_init(fp2);
+    int l1 = 0, l2 = 0;
+    
+    // Read pairs alternately until block is full or EOF
+    while (1) {
+        // Read from file 1 (R1)
+        l1 = kseq_read(seq1);
+        if (l1 < 0)
+            break;
+        
+        // Read from file 2 (R2)
+        l2 = kseq_read(seq2);
+        if (l2 < 0) {
+            fprintf(stderr, "Unpaired read detected: R2 file ended before R1\n");
+            kseq_destroy(seq1);
+            kseq_destroy(seq2);
+            goto err;
+        }
+        
+        // Check if we would exceed block size with both reads
+        int record_size1 = seq1->name.l + 1 + seq1->seq.l + seq1->qual.l;
+        int record_size2 = seq2->name.l + 1 + seq2->seq.l + seq2->qual.l;
+        if (total_size > 0 && total_size + record_size1 + record_size2 > blk_size) {
+            // Block is full, we'll process these reads in the next block
+            break;
+        }
+        
+        total_size += record_size1 + record_size2;
+        
+        // Process both R1 and R2 reads
+        for (int pair = 0; pair < 2; pair++) {
+            kseq_t *seq = (pair == 0) ? seq1 : seq2;
+            
+            if (nr >= ar) {
+                ar = ar*1.5 + 10000;
+                int *new_name = realloc(fq->name, ar*sizeof(char *));
+                int *new_seq  = realloc(fq->seq , ar*sizeof(char *));
+                int *new_qual = realloc(fq->qual, ar*sizeof(char *));
+                unsigned int *new_len  = realloc(fq->len,  ar*sizeof(int));
+                unsigned int *new_flag = realloc(fq->flag, ar*sizeof(int));
+                
+                if (!new_name || !new_seq || !new_qual || !new_len || !new_flag) {
+                    fprintf(stderr, "Failed to reallocate arrays for interleaved reads\n");
+                    kseq_destroy(seq1);
+                    kseq_destroy(seq2);
+                    goto err;
+                }
+                
+                fq->name = new_name;
+                fq->seq  = new_seq;
+                fq->qual = new_qual;
+                fq->len  = new_len;
+                fq->flag = new_flag;
+            }
+            
+            // Store name (and comment if present)
+            fq->name[nr] = name_i;
+            int total_name_len = seq->name.l;
+            if (seq->comment.l > 0) {
+                total_name_len += 1 + seq->comment.l; // space + comment
+            }
+            
+            if (name_i + total_name_len + 1 >= name_sz) {
+                name_sz = name_sz * 1.5 + total_name_len + 1000;
+                name_buf = fq->name_buf = realloc(fq->name_buf, name_sz);
+            }
+            memcpy(name_buf + name_i, seq->name.s, seq->name.l);
+            name_i += seq->name.l;
+            
+            // Add comment if present
+            if (seq->comment.l > 0) {
+                name_buf[name_i++] = ' ';
+                memcpy(name_buf + name_i, seq->comment.s, seq->comment.l);
+                name_i += seq->comment.l;
+            }
+            
+            name_buf[name_i++] = 0;
+            
+            // Set flag for R2 reads
+            int flag = (pair == 1) ? FQZ_FREAD2 : 0;
+            fq->flag[nr] = flag;
+            if (pair == 0)
+                last_name = fq->name[nr];
+            
+            // Store sequence
+            fq->seq[nr] = seq_i;
+            if (seq_i + seq->seq.l >= seq_sz) {
+                seq_sz = seq_sz * 1.5 + seq->seq.l + 1000;
+                seq_buf = fq->seq_buf = realloc(fq->seq_buf, seq_sz);
+            }
+            memcpy(seq_buf + seq_i, seq->seq.s, seq->seq.l);
+            seq_i += seq->seq.l;
+            fq->len[nr] = seq->seq.l;
+            
+            if (fq->fixed_len == -1)
+                fq->fixed_len = fq->len[nr];
+            else if (fq->fixed_len > 0)
+                if (fq->fixed_len != fq->len[nr])
+                    fq->fixed_len = 0;
+            
+            // Store quality
+            fq->qual[nr] = qual_i;
+            if (qual_i + seq->qual.l >= qual_sz) {
+                qual_sz = qual_sz * 1.5 + seq->qual.l + 1000;
+                qual_buf = fq->qual_buf = realloc(fq->qual_buf, qual_sz);
+            }
+            for (int i = 0; i < seq->qual.l; i++)
+                qual_buf[qual_i++] = seq->qual.s[i] - 33;
+            
+            if (fq->len[nr] != seq->qual.l) {
+                fprintf(stderr, "Sequence and quality length mismatch\n");
+                kseq_destroy(seq1);
+                kseq_destroy(seq2);
+                goto err;
+            }
+            
+            nr++;
+        }
+    }
+    
+    kseq_destroy(seq1);
+    kseq_destroy(seq2);
+    
+    // Set EOF flag if both files reached EOF
+    if (l1 == -1 && l2 == -1) {
+        *eof_flag = 1;
+    } else if (l1 < -1 || l2 < -1) {
+        fprintf(stderr, "Error reading FASTQ files (codes %d, %d)\n", l1, l2);
+        goto err;
+    }
+    // Note: If l1 >= 0 and l2 >= 0, we broke due to block size and will continue next time
+    
+    fq->name_len = name_i;
+    fq->seq_len  = seq_i;
+    fq->qual_len = qual_i;
+    fq->num_records = nr;
+    
+    // Reduce memory wastage
+    fq->name_buf = realloc(fq->name_buf, name_i > 0 ? name_i : 1);
+    fq->seq_buf  = realloc(fq->seq_buf,  seq_i > 0 ? seq_i : 1);
+    fq->qual_buf = realloc(fq->qual_buf, qual_i > 0 ? qual_i : 1);
+    
+    return fq;
+
+ err:
+    fprintf(stderr, "Failed to load interleaved fastq input\n");
+    fastq_free(fq);
+    
+    return NULL;
+}
+
 #if 0
 static uint64_t manual_strats[10] = {0};
 static int manual_nstrat = 0;
@@ -1747,6 +1922,32 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t) {
     fq->name_buf = (char *)out;
     fq->name_len = u_len;
 
+    // Populate name indices and flags from decompressed names
+    {
+        char *np = fq->name_buf;
+        int name_i = 0;
+        int last_name = -1;
+        for (i = 0; i < nr; i++) {
+            fq->name[i] = name_i;
+            
+            // Determine flag by checking name suffix or comparing with previous name
+            int flag = 0;
+            int name_len = strlen(np);
+            if (name_len > 1 && np[name_len-1] == '2' && np[name_len-2] == '/')
+                flag = FQZ_FREAD2;
+            else if (last_name >= 0 &&
+                strcmp(fq->name_buf + fq->name[i], fq->name_buf + last_name) == 0)
+                flag = FQZ_FREAD2;
+            fq->flag[i] = flag;
+            
+            if (!flag)
+                last_name = fq->name[i];
+            
+            name_i += name_len + 1;  // +1 for null terminator
+            np += name_len + 1;
+        }
+    }
+
     gettimeofday(&tv2, NULL);
     t->ncsize += u_len;
     t->nusize += c_len;
@@ -2215,6 +2416,158 @@ int encode_gzip(gzFile in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
     return -1;
 }
 
+// Encode two paired FASTQ files with interleaving
+int encode_interleaved(gzFile in_fp1, gzFile in_fp2, FILE *out_fp, fqz_gparams *gp, opts *arg,
+           timings *t) {
+    int rans_methods = (1<<RANS0) | (1<<RANS1) | (1<<RANS129) | (1<<RANS193);
+
+    // Name
+    if (arg->nauto) {
+        method_avail[SEC_NAME] = arg->nauto;
+    } else {
+        if (arg->nstrat == 1)
+            method_avail[SEC_NAME] |= 1<<(TOK3_3 + arg->nlevel/2-1);
+        else if (arg->nstrat == 2)
+            method_avail[SEC_NAME] |= 1<<(TOK3_3_LZP + arg->nlevel/2-1);
+        else
+            method_avail[SEC_NAME] = 1<<TLZP3;
+    }
+    
+    // Seq
+    if (arg->scustom) {
+        method_avail[SEC_SEQ] = 1<<SEQ_CUSTOM;
+    } else {
+        if (arg->sauto)
+            method_avail[SEC_SEQ] = arg->sauto;
+        else if (arg->sstrat == 1)
+            method_avail[SEC_SEQ] = 1<<SEQ_CUSTOM;
+
+        if (!method_avail[SEC_SEQ])
+            method_avail[SEC_SEQ] = rans_methods;
+    }
+
+    // Qual
+    if (arg->qauto) {
+        method_avail[SEC_QUAL] = arg->qauto;
+    } else {
+        if (arg->qstrat == 1) {
+            if (arg->qlevel == 4)
+                method_avail[SEC_QUAL] = FQZ4;
+            else if (arg->qlevel == 3)
+                method_avail[SEC_QUAL] = FQZ3;
+            else if (arg->qlevel == 1)
+                method_avail[SEC_QUAL] = FQZ1;
+            else if (arg->qlevel == 2)
+                method_avail[SEC_QUAL] = FQZ2;
+            else
+                method_avail[SEC_QUAL] = FQZ0;
+        } else {
+            method_avail[SEC_QUAL] = rans_methods;
+        }
+    }
+
+#ifdef THREADED
+    int n = arg->nthread, end = 0;
+    hts_tpool *p = hts_tpool_init(n);
+    hts_tpool_process *q = hts_tpool_process_init(p, n, 0);
+    hts_tpool_result *r;
+    enc_dec_job *j, *jr;
+#endif
+
+    int eof_flag = 0;
+
+    while (!eof_flag) {
+        fastq *fq = load_seqs_interleaved(in_fp1, in_fp2, arg->blk_size, &eof_flag);
+
+        if (!fq)
+            return -1;
+
+        if (!fq->num_records) {
+            fastq_free(fq);
+            break;
+        }
+
+#ifdef THREADED
+        // Dispatch a job
+        j = calloc(1, sizeof(*j));
+        j->gp = gp;
+        j->arg = arg;
+        memset(&j->t, 0, sizeof(j->t));
+        j->fq = fq;
+        j->eof = 0;
+
+        int ret = -1;
+        while (ret == -1) {
+            // Always dispatch, going over-size on queue
+            if ((ret=hts_tpool_dispatch2(p, q, encode_thread, j, -1)) != 0) {
+                if (errno != EAGAIN)
+                    goto err;
+            }
+
+            // Check for a result.
+            // If input queue is oversize then do this blocking so we
+            // don't grow input queue indefinitely.
+            do {
+                if (hts_tpool_dispatch_would_block(p, q)) {
+                    r = hts_tpool_next_result_wait(q);
+                } else {
+                    r = hts_tpool_next_result(q);
+                }
+                if (r) {
+                    jr = hts_tpool_result_data(r);
+                    if (jr->eof) {
+                        end = 1;
+                    } else {
+                        append_timings(t, &jr->t, arg->verbose);
+                        fwrite(&jr->clen, 1, 4, out_fp);
+                        fwrite(jr->comp, 1, jr->clen, out_fp);
+                        free(jr->comp);
+                    }
+                    hts_tpool_delete_result(r, 1);
+                }
+            } while (r && hts_tpool_dispatch_would_block(p, q));
+        }
+#else
+        uint32_t clen;
+        t->nblock++;
+        char *out = encode_block(gp, arg, fq, t, &clen);
+        fwrite(&clen, 1, 4, out_fp);
+        fwrite(out, 1, clen, out_fp);
+        free(out);
+
+        fastq_free(fq);
+#endif
+    }
+
+#ifdef THREADED
+    j = malloc(sizeof(*j));
+    j->eof = 1;
+    if (hts_tpool_dispatch2(p, q, encode_thread, j, -1) != 0)
+        goto err;
+
+    // End of input, so work through remaining results
+    while (!end && (r = hts_tpool_next_result_wait(q))) {
+        enc_dec_job *jr = hts_tpool_result_data(r);
+        if (jr->eof) {
+            end = 1;
+        } else {
+            append_timings(t, &jr->t, arg->verbose);
+            fwrite(&jr->clen, 1, 4, out_fp);
+            fwrite(jr->comp, 1, jr->clen, out_fp);
+            free(jr->comp);
+        }
+        hts_tpool_delete_result(r, 1);
+    }
+    hts_tpool_process_destroy(q);
+    hts_tpool_destroy(p);
+#endif
+
+    return 0;
+
+ err:
+    return -1;
+}
+
 int output_fastq(FILE *out_fp, fastq *fq) {
     char *np = fq->name_buf;
     char *sp = fq->seq_buf;
@@ -2283,6 +2636,106 @@ int output_fastq_gzip(gzFile out_fp, fastq *fq) {
     }
     gzwrite(out_fp, buf, cp-buf);
     free(buf);
+
+    return 0;
+}
+
+// Output interleaved FASTQ to two separate files (deinterleaving)
+int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq) {
+    char *np = fq->name_buf;
+    char *sp = fq->seq_buf;
+    char *qp = fq->qual_buf;
+
+    // Build separate buffers for R1 and R2
+    int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
+    char *buf1 = malloc(len);
+    char *buf2 = malloc(len);
+    if (!buf1 || !buf2) {
+        free(buf1);
+        free(buf2);
+        fprintf(stderr, "Failed to allocate memory for deinterleaving\n");
+        return -1;
+    }
+    char *cp1 = buf1;
+    char *cp2 = buf2;
+
+    for (int i = 0; i < fq->num_records; i++) {
+        // Determine which buffer to use
+        char **cpp = (fq->flag[i] & FQZ_FREAD2) ? &cp2 : &cp1;
+        char *cp = *cpp;
+        
+        *cp++ = '@';
+        while ((*cp++ = *np++))
+            ;
+        *--cp = '\n'; cp++;
+        memcpy(cp, sp, fq->len[i]);
+        cp += fq->len[i];
+        sp += fq->len[i];
+        *cp++ = '\n';
+        *cp++ = '+';
+        *cp++ = '\n';
+        memcpy(cp, qp, fq->len[i]);
+        cp += fq->len[i];
+        qp += fq->len[i];
+        *cp++ = '\n';
+        
+        *cpp = cp;
+    }
+    
+    fwrite(buf1, 1, cp1-buf1, out_fp1);
+    fwrite(buf2, 1, cp2-buf2, out_fp2);
+    free(buf1);
+    free(buf2);
+
+    return 0;
+}
+
+// Output interleaved FASTQ to two separate gzipped files (deinterleaving)
+int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq) {
+    char *np = fq->name_buf;
+    char *sp = fq->seq_buf;
+    char *qp = fq->qual_buf;
+
+    // Build separate buffers for R1 and R2
+    int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
+    char *buf1 = malloc(len);
+    char *buf2 = malloc(len);
+    if (!buf1 || !buf2) {
+        free(buf1);
+        free(buf2);
+        fprintf(stderr, "Failed to allocate memory for deinterleaving\n");
+        return -1;
+    }
+    char *cp1 = buf1;
+    char *cp2 = buf2;
+
+    for (int i = 0; i < fq->num_records; i++) {
+        // Determine which buffer to use
+        char **cpp = (fq->flag[i] & FQZ_FREAD2) ? &cp2 : &cp1;
+        char *cp = *cpp;
+        
+        *cp++ = '@';
+        while ((*cp++ = *np++))
+            ;
+        *--cp = '\n'; cp++;
+        memcpy(cp, sp, fq->len[i]);
+        cp += fq->len[i];
+        sp += fq->len[i];
+        *cp++ = '\n';
+        *cp++ = '+';
+        *cp++ = '\n';
+        memcpy(cp, qp, fq->len[i]);
+        cp += fq->len[i];
+        qp += fq->len[i];
+        *cp++ = '\n';
+        
+        *cpp = cp;
+    }
+    
+    gzwrite(out_fp1, buf1, cp1-buf1);
+    gzwrite(out_fp2, buf2, cp2-buf2);
+    free(buf1);
+    free(buf2);
 
     return 0;
 }
@@ -2499,9 +2952,201 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
     return -1;
 }
 
+// Decode with deinterleaving to two separate files
+int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, timings *t) {
+#ifdef THREADED
+    int n = arg->nthread, end = 0;
+    hts_tpool *p = hts_tpool_init(n);
+    hts_tpool_process *q = hts_tpool_process_init(p, n, 0);
+    hts_tpool_result *r;
+    enc_dec_job *j;
+#endif
+
+    for (;;) {
+        // Load next compressed block
+        int i, c_len;
+        unsigned char *comp;
+
+        // Total compressed size
+        if (fread(&c_len, 1, 4, in_fp) != 4)
+            break;
+
+        comp = malloc(c_len);
+        if (fread(comp, 1, c_len, in_fp) != c_len)
+            return -1;
+
+#ifdef THREADED
+        // Dispatch a job
+        j = calloc(1, sizeof(*j));
+        memset(&j->t, 0, sizeof(j->t));
+        j->comp = comp;
+        j->clen = c_len;
+        j->fq = NULL;
+        j->eof = 0;
+
+        // Always put on queue, even if over queue size
+        if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
+            goto err;
+
+        // Check for a result.
+        do {
+            if (hts_tpool_dispatch_would_block(p, q)) {
+                r = hts_tpool_next_result_wait(q);
+            } else {
+                r = hts_tpool_next_result(q);
+            }
+            if (r) {
+                j = hts_tpool_result_data(r);
+                if (j->eof) {
+                    end = 1;
+                } else {
+                    append_timings(t, &j->t, arg->verbose);
+                    output_fastq_deinterleaved(out_fp1, out_fp2, j->fq);
+                    fastq_free(j->fq);
+                }
+                hts_tpool_delete_result(r, 1);
+            }
+        } while (r && hts_tpool_dispatch_would_block(p, q));
+#else
+        t->nblock++;
+        fastq *fq = decode_block(comp, c_len, t);
+
+        output_fastq_deinterleaved(out_fp1, out_fp2, fq);
+
+        free(comp);
+        fastq_free(fq);
+#endif
+    }
+
+#ifdef THREADED
+    j = malloc(sizeof(*j));
+    j->eof = 1;
+    if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
+        goto err;
+
+    // End of input, so work through remaining results
+    while (!end && (r = hts_tpool_next_result_wait(q))) {
+        enc_dec_job *j = hts_tpool_result_data(r);
+        if (j->eof) {
+            end = 1;
+        } else {
+            append_timings(t, &j->t, arg->verbose);
+            output_fastq_deinterleaved(out_fp1, out_fp2, j->fq);
+            fastq_free(j->fq);
+        }
+        hts_tpool_delete_result(r, 1);
+    }
+    hts_tpool_process_destroy(q);
+    hts_tpool_destroy(p);
+#endif
+
+    return 0;
+
+ err:
+    // FIXME: tidy up
+    return -1;
+}
+
+// Decode with deinterleaving to two separate gzipped files
+int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts *arg, timings *t) {
+#ifdef THREADED
+    int n = arg->nthread, end = 0;
+    hts_tpool *p = hts_tpool_init(n);
+    hts_tpool_process *q = hts_tpool_process_init(p, n, 0);
+    hts_tpool_result *r;
+    enc_dec_job *j;
+#endif
+
+    for (;;) {
+        // Load next compressed block
+        int i, c_len;
+        unsigned char *comp;
+
+        // Total compressed size
+        if (fread(&c_len, 1, 4, in_fp) != 4)
+            break;
+
+        comp = malloc(c_len);
+        if (fread(comp, 1, c_len, in_fp) != c_len)
+            return -1;
+
+#ifdef THREADED
+        // Dispatch a job
+        j = calloc(1, sizeof(*j));
+        memset(&j->t, 0, sizeof(j->t));
+        j->comp = comp;
+        j->clen = c_len;
+        j->fq = NULL;
+        j->eof = 0;
+
+        // Always put on queue, even if over queue size
+        if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
+            goto err;
+
+        // Check for a result.
+        do {
+            if (hts_tpool_dispatch_would_block(p, q)) {
+                r = hts_tpool_next_result_wait(q);
+            } else {
+                r = hts_tpool_next_result(q);
+            }
+            if (r) {
+                j = hts_tpool_result_data(r);
+                if (j->eof) {
+                    end = 1;
+                } else {
+                    append_timings(t, &j->t, arg->verbose);
+                    output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq);
+                    fastq_free(j->fq);
+                }
+                hts_tpool_delete_result(r, 1);
+            }
+        } while (r && hts_tpool_dispatch_would_block(p, q));
+#else
+        t->nblock++;
+        fastq *fq = decode_block(comp, c_len, t);
+
+        output_fastq_gzip_deinterleaved(out_fp1, out_fp2, fq);
+
+        free(comp);
+        fastq_free(fq);
+#endif
+    }
+
+#ifdef THREADED
+    j = malloc(sizeof(*j));
+    j->eof = 1;
+    if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
+        goto err;
+
+    // End of input, so work through remaining results
+    while (!end && (r = hts_tpool_next_result_wait(q))) {
+        enc_dec_job *j = hts_tpool_result_data(r);
+        if (j->eof) {
+            end = 1;
+        } else {
+            append_timings(t, &j->t, arg->verbose);
+            output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq);
+            fastq_free(j->fq);
+        }
+        hts_tpool_delete_result(r, 1);
+    }
+    hts_tpool_process_destroy(q);
+    hts_tpool_destroy(p);
+#endif
+
+    return 0;
+
+ err:
+    // FIXME: tidy up
+    return -1;
+}
+
 void usage(FILE *fp) {
     fprintf(fp, "Usage: fqzcomp5 [options]    [input.fastq [output.fqz5]]\n");
+    fprintf(fp, "Usage: fqzcomp5 [options]    [input_R1.fastq input_R2.fastq output.fqz5]\n");
     fprintf(fp, "Usage: fqzcomp5 [options] -d [input.fqz5  [output.fastq]]\n");
+    fprintf(fp, "Usage: fqzcomp5 [options] -d [input.fqz5  [output_R1.fastq output_R2.fastq]]\n");
     fprintf(fp, "\nOptions:\n");
     fprintf(fp, "    -d            Decompress\n");
     fprintf(fp, "    -t INT        Number of threads.  Defaults to 4\n");
@@ -2523,6 +3168,12 @@ void usage(FILE *fp) {
     fprintf(fp, "    -5            100MB block and basic seq / qual FQZ modes (default)\n");
     fprintf(fp, "    -7            500MB block and higher level FQZ modes\n");
     fprintf(fp, "    -9            Maximum compression, with 1GB blocks\n");
+    fprintf(fp, "\n");
+    fprintf(fp, "Paired-end mode:\n");
+    fprintf(fp, "  When two input files are provided, they are automatically interleaved\n");
+    fprintf(fp, "  during compression for better read-name compression.\n");
+    fprintf(fp, "  When two output files are provided during decompression, the data is\n");
+    fprintf(fp, "  automatically deinterleaved to separate R1 and R2 files.\n");
 }
 
 int main(int argc, char **argv) {
@@ -2722,96 +3373,279 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    // Detect if input/output should be gzipped
-    const char *in_name = optind < argc ? argv[optind] : NULL;
-    const char *out_name = (optind+1) < argc ? argv[optind+1] : NULL;
+    // Determine if we have paired files
+    // Compression: 0, 1, 2, or 3 args (stdin/stdout, in, in out, in1 in2 out)
+    // Decompression: 0, 1, 2, or 3 args (stdin/stdout, in, in out, in out1 out2)
+    int num_file_args = argc - optind;
+    int paired_mode = 0;
     
-    int in_is_gz = 0, out_is_gz = 0;
+    const char *in_name1 = NULL, *in_name2 = NULL;
+    const char *out_name1 = NULL, *out_name2 = NULL;
     
-    if (in_name) {
-        size_t len = strlen(in_name);
-        if (len > 3 && strcmp(in_name + len - 3, ".gz") == 0)
-            in_is_gz = 1;
+    if (decomp) {
+        // Decompression mode
+        if (num_file_args == 0) {
+            // stdin to stdout
+            in_name1 = NULL;
+            out_name1 = NULL;
+        } else if (num_file_args == 1) {
+            // file to stdout
+            in_name1 = argv[optind];
+            out_name1 = NULL;
+        } else if (num_file_args == 2) {
+            // file to file
+            in_name1 = argv[optind];
+            out_name1 = argv[optind+1];
+        } else if (num_file_args == 3) {
+            // file to paired files (deinterleave)
+            in_name1 = argv[optind];
+            out_name1 = argv[optind+1];
+            out_name2 = argv[optind+2];
+            paired_mode = 1;
+        } else {
+            fprintf(stderr, "Error: Too many arguments\n");
+            usage(stderr);
+            return 1;
+        }
+    } else {
+        // Compression mode
+        if (num_file_args == 0) {
+            // stdin to stdout
+            in_name1 = NULL;
+            out_name1 = NULL;
+        } else if (num_file_args == 1) {
+            // file to stdout
+            in_name1 = argv[optind];
+            out_name1 = NULL;
+        } else if (num_file_args == 2) {
+            // file to file
+            in_name1 = argv[optind];
+            out_name1 = argv[optind+1];
+        } else if (num_file_args == 3) {
+            // paired files to file (interleave)
+            in_name1 = argv[optind];
+            in_name2 = argv[optind+1];
+            out_name1 = argv[optind+2];
+            paired_mode = 1;
+        } else {
+            fprintf(stderr, "Error: Too many arguments\n");
+            usage(stderr);
+            return 1;
+        }
     }
     
-    if (out_name) {
-        size_t len = strlen(out_name);
-        if (len > 3 && strcmp(out_name + len - 3, ".gz") == 0)
-            out_is_gz = 1;
+    // Detect if input/output should be gzipped
+    int in1_is_gz = 0, in2_is_gz = 0, out1_is_gz = 0, out2_is_gz = 0;
+    
+    if (in_name1) {
+        size_t len = strlen(in_name1);
+        if (len > 3 && strcmp(in_name1 + len - 3, ".gz") == 0)
+            in1_is_gz = 1;
+    }
+    
+    if (in_name2) {
+        size_t len = strlen(in_name2);
+        if (len > 3 && strcmp(in_name2 + len - 3, ".gz") == 0)
+            in2_is_gz = 1;
+    }
+    
+    if (out_name1) {
+        size_t len = strlen(out_name1);
+        if (len > 3 && strcmp(out_name1 + len - 3, ".gz") == 0)
+            out1_is_gz = 1;
+    }
+    
+    if (out_name2) {
+        size_t len = strlen(out_name2);
+        if (len > 3 && strcmp(out_name2 + len - 3, ".gz") == 0)
+            out2_is_gz = 1;
     }
 
     // Open files based on compression status
-    gzFile gz_in_fp = NULL;
-    gzFile gz_out_fp = NULL;
+    gzFile gz_in_fp1 = NULL, gz_in_fp2 = NULL;
+    gzFile gz_out_fp1 = NULL, gz_out_fp2 = NULL;
+    FILE *in_fp1 = NULL, *in_fp2 = NULL;
+    FILE *out_fp1 = NULL, *out_fp2 = NULL;
     
     if (decomp) {
         // For decompression: input is always .fqz5 (not gzipped)
-        // output can be plain or gzipped FASTQ
-        in_fp = in_name ? fopen(in_name, "rb") : stdin;
-        if (!in_fp) {
-            perror(in_name);
+        in_fp1 = in_name1 ? fopen(in_name1, "rb") : stdin;
+        if (!in_fp1) {
+            perror(in_name1);
             return 1;
         }
         
-        if (out_is_gz) {
-            gz_out_fp = out_name ? gzopen(out_name, "wb") : gzdopen(fileno(stdout), "wb");
-            if (!gz_out_fp) {
-                perror(out_name);
-                fclose(in_fp);
-                return 1;
+        if (paired_mode) {
+            // Two output files (deinterleave)
+            if (out1_is_gz) {
+                gz_out_fp1 = out_name1 ? gzopen(out_name1, "wb") : gzdopen(fileno(stdout), "wb");
+                if (!gz_out_fp1) {
+                    perror(out_name1);
+                    fclose(in_fp1);
+                    return 1;
+                }
+            } else {
+                out_fp1 = out_name1 ? fopen(out_name1, "wb") : stdout;
+                if (!out_fp1) {
+                    perror(out_name1);
+                    fclose(in_fp1);
+                    return 1;
+                }
+            }
+            
+            if (out2_is_gz) {
+                gz_out_fp2 = gzopen(out_name2, "wb");
+                if (!gz_out_fp2) {
+                    perror(out_name2);
+                    fclose(in_fp1);
+                    if (out1_is_gz) gzclose(gz_out_fp1); else fclose(out_fp1);
+                    return 1;
+                }
+            } else {
+                out_fp2 = fopen(out_name2, "wb");
+                if (!out_fp2) {
+                    perror(out_name2);
+                    fclose(in_fp1);
+                    if (out1_is_gz) gzclose(gz_out_fp1); else fclose(out_fp1);
+                    return 1;
+                }
             }
         } else {
-            out_fp = out_name ? fopen(out_name, "wb") : stdout;
-            if (!out_fp) {
-                perror(out_name);
-                fclose(in_fp);
-                return 1;
+            // Single output file
+            if (out1_is_gz) {
+                gz_out_fp1 = out_name1 ? gzopen(out_name1, "wb") : gzdopen(fileno(stdout), "wb");
+                if (!gz_out_fp1) {
+                    perror(out_name1);
+                    fclose(in_fp1);
+                    return 1;
+                }
+            } else {
+                out_fp1 = out_name1 ? fopen(out_name1, "wb") : stdout;
+                if (!out_fp1) {
+                    perror(out_name1);
+                    fclose(in_fp1);
+                    return 1;
+                }
             }
         }
     } else {
-        // For compression: input can be plain or gzipped FASTQ
-        // output is always .fqz5 (not gzipped)
-        if (in_is_gz) {
-            gz_in_fp = in_name ? gzopen(in_name, "rb") : gzdopen(fileno(stdin), "rb");
-            if (!gz_in_fp) {
-                perror(in_name);
-                return 1;
+        // For compression
+        if (paired_mode) {
+            // Two input files (interleave)
+            if (in1_is_gz) {
+                gz_in_fp1 = in_name1 ? gzopen(in_name1, "rb") : gzdopen(fileno(stdin), "rb");
+                if (!gz_in_fp1) {
+                    perror(in_name1);
+                    return 1;
+                }
+            } else {
+                in_fp1 = in_name1 ? fopen(in_name1, "rb") : stdin;
+                if (!in_fp1) {
+                    perror(in_name1);
+                    return 1;
+                }
+            }
+            
+            if (in2_is_gz) {
+                gz_in_fp2 = gzopen(in_name2, "rb");
+                if (!gz_in_fp2) {
+                    perror(in_name2);
+                    if (in1_is_gz) gzclose(gz_in_fp1); else fclose(in_fp1);
+                    return 1;
+                }
+            } else {
+                in_fp2 = fopen(in_name2, "rb");
+                if (!in_fp2) {
+                    perror(in_name2);
+                    if (in1_is_gz) gzclose(gz_in_fp1); else fclose(in_fp1);
+                    return 1;
+                }
             }
         } else {
-            in_fp = in_name ? fopen(in_name, "rb") : stdin;
-            if (!in_fp) {
-                perror(in_name);
-                return 1;
+            // Single input file
+            if (in1_is_gz) {
+                gz_in_fp1 = in_name1 ? gzopen(in_name1, "rb") : gzdopen(fileno(stdin), "rb");
+                if (!gz_in_fp1) {
+                    perror(in_name1);
+                    return 1;
+                }
+            } else {
+                in_fp1 = in_name1 ? fopen(in_name1, "rb") : stdin;
+                if (!in_fp1) {
+                    perror(in_name1);
+                    return 1;
+                }
             }
         }
         
-        out_fp = out_name ? fopen(out_name, "wb") : stdout;
-        if (!out_fp) {
-            perror(out_name);
-            if (in_is_gz)
-                gzclose(gz_in_fp);
-            else
-                fclose(in_fp);
+        out_fp1 = out_name1 ? fopen(out_name1, "wb") : stdout;
+        if (!out_fp1) {
+            perror(out_name1);
+            if (paired_mode) {
+                if (in1_is_gz) gzclose(gz_in_fp1); else fclose(in_fp1);
+                if (in2_is_gz) gzclose(gz_in_fp2); else fclose(in_fp2);
+            } else {
+                if (in1_is_gz) gzclose(gz_in_fp1); else fclose(in_fp1);
+            }
             return 1;
         }
     }
 
     // Block based, for arbitrary sizes of input
     if (decomp) {
-        if (out_is_gz) {
-            if (decode_gzip(in_fp, gz_out_fp, &arg, &t) < 0)
+        if (paired_mode) {
+            // Deinterleave to two files
+            if (out1_is_gz && out2_is_gz) {
+                if (decode_gzip_deinterleaved(in_fp1, gz_out_fp1, gz_out_fp2, &arg, &t) < 0)
+                    exit(1);
+            } else if (!out1_is_gz && !out2_is_gz) {
+                if (decode_deinterleaved(in_fp1, out_fp1, out_fp2, &arg, &t) < 0)
+                    exit(1);
+            } else {
+                fprintf(stderr, "Error: Both output files must have the same format (both .gz or both plain)\n");
                 exit(1);
+            }
         } else {
-            if (decode(in_fp, out_fp, &arg, &t) < 0)
-                exit(1);
+            // Single output file
+            if (out1_is_gz) {
+                if (decode_gzip(in_fp1, gz_out_fp1, &arg, &t) < 0)
+                    exit(1);
+            } else {
+                if (decode(in_fp1, out_fp1, &arg, &t) < 0)
+                    exit(1);
+            }
         }
     } else {
-        if (in_is_gz) {
-            if (encode_gzip(gz_in_fp, out_fp, gp, &arg, &t) < 0)
+        if (paired_mode) {
+            // Interleave two input files
+            // Both inputs should be gzipped or both plain
+            if ((in1_is_gz && in2_is_gz) || (!in1_is_gz && !in2_is_gz)) {
+                gzFile fp1 = in1_is_gz ? gz_in_fp1 : gzdopen(fileno(in_fp1), "rb");
+                gzFile fp2 = in2_is_gz ? gz_in_fp2 : gzdopen(fileno(in_fp2), "rb");
+                if (!fp1 || !fp2) {
+                    fprintf(stderr, "Error: Failed to open input files for reading\n");
+                    if (fp1) gzclose(fp1);
+                    if (fp2) gzclose(fp2);
+                    exit(1);
+                }
+                if (encode_interleaved(fp1, fp2, out_fp1, gp, &arg, &t) < 0)
+                    exit(1);
+                // Close the gzdopen handles if they were created
+                if (!in1_is_gz) gzclose(fp1);
+                if (!in2_is_gz) gzclose(fp2);
+            } else {
+                fprintf(stderr, "Error: Both input files must have the same format (both .gz or both plain)\n");
                 exit(1);
+            }
         } else {
-            if (encode(in_fp, out_fp, gp, &arg, &t) < 0)
-                exit(1);
+            // Single input file
+            if (in1_is_gz) {
+                if (encode_gzip(gz_in_fp1, out_fp1, gp, &arg, &t) < 0)
+                    exit(1);
+            } else {
+                if (encode(in_fp1, out_fp1, gp, &arg, &t) < 0)
+                    exit(1);
+            }
         }
     }
 
@@ -2829,17 +3663,21 @@ int main(int argc, char **argv) {
 
     // Close files
     if (decomp) {
-        fclose(in_fp);
-        if (out_is_gz)
-            gzclose(gz_out_fp);
-        else
-            fclose(out_fp);
+        fclose(in_fp1);
+        if (paired_mode) {
+            if (out1_is_gz) gzclose(gz_out_fp1); else fclose(out_fp1);
+            if (out2_is_gz) gzclose(gz_out_fp2); else fclose(out_fp2);
+        } else {
+            if (out1_is_gz) gzclose(gz_out_fp1); else fclose(out_fp1);
+        }
     } else {
-        if (in_is_gz)
-            gzclose(gz_in_fp);
-        else
-            fclose(in_fp);
-        fclose(out_fp);
+        if (paired_mode) {
+            if (in1_is_gz) gzclose(gz_in_fp1); else fclose(in_fp1);
+            if (in2_is_gz) gzclose(gz_in_fp2); else fclose(in_fp2);
+        } else {
+            if (in1_is_gz) gzclose(gz_in_fp1); else fclose(in_fp1);
+        }
+        fclose(out_fp1);
     }
 
     return 0;
