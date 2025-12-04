@@ -64,6 +64,11 @@ sudo apt-get install build-essential autoconf libtool zlib1g-dev libbz2-dev
 
 On Red Hat/Fedora systems:
 ```bash
+sudo dnf install gcc autoconf libtool zlib-devel bzip2-devel
+```
+
+Or for older systems using yum:
+```bash
 sudo yum install gcc autoconf libtool zlib-devel bzip2-devel
 ```
 
@@ -487,7 +492,7 @@ TO DO
   See the "File Format" section above for details.
 
 - ~~Push more changes back into htscodecs upstream.  For now we're using
-  out own fork.~~
+  our own fork.~~
 
   **DONE**: The htscodecs library is now properly integrated as a git submodule,
   using the `fqz_seq_u32` branch from the upstream repository 
