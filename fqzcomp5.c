@@ -2384,7 +2384,12 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 			// Track block offset for index
 			if (idx.nblocks >= idx_capacity) {
 			    idx_capacity *= 2;
-			    idx.entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+			    index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+			    if (!new_entries) {
+				free(idx.entries);
+				goto err;
+			    }
+			    idx.entries = new_entries;
 			}
 			idx.entries[idx.nblocks].offset = ftell(out_fp);
 			idx.entries[idx.nblocks].usize = jr->usize;
@@ -2406,7 +2411,12 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 	// Track block offset for index
 	if (idx.nblocks >= idx_capacity) {
 	    idx_capacity *= 2;
-	    idx.entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+	    index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+	    if (!new_entries) {
+		free(idx.entries);
+		return -1;
+	    }
+	    idx.entries = new_entries;
 	}
 	idx.entries[idx.nblocks].offset = ftell(out_fp);
 	idx.entries[idx.nblocks].usize = fq->seq_len;
@@ -2440,7 +2450,14 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 	    // Track block offset for index
 	    if (idx.nblocks >= idx_capacity) {
 		idx_capacity *= 2;
-		idx.entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+		index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+		if (!new_entries) {
+		    free(idx.entries);
+		    hts_tpool_process_destroy(q);
+		    hts_tpool_destroy(p);
+		    return -1;
+		}
+		idx.entries = new_entries;
 	    }
 	    idx.entries[idx.nblocks].offset = ftell(out_fp);
 	    idx.entries[idx.nblocks].usize = j->usize;
