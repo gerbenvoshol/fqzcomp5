@@ -2579,7 +2579,7 @@ int output_fastq(FILE *out_fp, fastq *fq, int plus_name) {
     // Calculate buffer size - if plus_name, need space for name on third line
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len;  // additional space for names on third line
+        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
     char *buf = malloc(len), *cp = buf;
 
     for (int i = 0; i < fq->num_records; i++) {
@@ -2637,7 +2637,7 @@ int output_fastq_gzip(gzFile out_fp, fastq *fq, int plus_name) {
     // Calculate buffer size - if plus_name, need space for name on third line
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len;  // additional space for names on third line
+        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
     char *buf = malloc(len), *cp = buf;
 
     for (int i = 0; i < fq->num_records; i++) {
@@ -2681,7 +2681,7 @@ int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq, int plus
     // Calculate buffer size - if plus_name, need space for name on third line
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len;  // additional space for names on third line
+        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
     char *buf1 = malloc(len);
     char *buf2 = malloc(len);
     if (!buf1 || !buf2) {
@@ -2743,7 +2743,7 @@ int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq, i
     // Calculate buffer size - if plus_name, need space for name on third line
     int len = fq->name_len + fq->seq_len + fq->qual_len + fq->num_records*5;
     if (plus_name)
-        len += fq->name_len;  // additional space for names on third line
+        len += fq->name_len + fq->num_records;  // additional space for names on third line + safety margin
     char *buf1 = malloc(len);
     char *buf2 = malloc(len);
     if (!buf1 || !buf2) {
