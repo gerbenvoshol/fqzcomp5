@@ -51,39 +51,35 @@ Dependencies
 
 Fqzcomp5 requires the following dependencies:
 
-- **htscodecs** - High-throughput sequencing codecs library (included as a git submodule)
 - **zlib** - Compression library for gzipped FASTQ support
 - **libbz2** - BZip2 compression library
-- **autoconf** and **libtool** - Build tools (for building htscodecs)
 - **gcc** or compatible C compiler
+
+The htscodecs library is now fully integrated into the fqzcomp5 source tree,
+so no separate installation or submodule initialization is required.
 
 On Debian/Ubuntu systems, install dependencies with:
 ```bash
-sudo apt-get install build-essential autoconf libtool zlib1g-dev libbz2-dev
+sudo apt-get install build-essential zlib1g-dev libbz2-dev
 ```
 
 On Red Hat/Fedora systems:
 ```bash
-sudo dnf install gcc autoconf libtool zlib-devel bzip2-devel
+sudo dnf install gcc zlib-devel bzip2-devel
 ```
 
 Or for older systems using yum:
 ```bash
-sudo yum install gcc autoconf libtool zlib-devel bzip2-devel
+sudo yum install gcc zlib-devel bzip2-devel
 ```
 
 Building from Source
 --------------------
 
-1. **Clone the repository with submodules:**
+1. **Clone the repository:**
    ```bash
-   git clone --recursive https://github.com/gerbenvoshol/fqzcomp5.git
+   git clone https://github.com/gerbenvoshol/fqzcomp5.git
    cd fqzcomp5
-   ```
-
-   If you already cloned without `--recursive`, initialize the submodule:
-   ```bash
-   git submodule update --init --recursive
    ```
 
 2. **Build the project:**
@@ -92,7 +88,7 @@ Building from Source
    ```
 
    The Makefile will automatically:
-   - Build the htscodecs library from the submodule
+   - Compile the integrated htscodecs library sources
    - Compile fqzcomp5 and link it with htscodecs
    - Create the `fqzcomp5` binary in the current directory
 
@@ -104,8 +100,8 @@ Building from Source
 About htscodecs Integration
 ----------------------------
 
-Fqzcomp5 uses the [htscodecs library](https://github.com/jkbonfield/htscodecs) as a git submodule. 
-This library provides the core compression codecs including:
+Fqzcomp5 uses the [htscodecs library](https://github.com/jkbonfield/htscodecs), which is now 
+fully integrated into the source tree. This library provides the core compression codecs including:
 
 - **rANS** (Asymmetric Numeral Systems) entropy encoders - both 4x8 and 4x16 variants with bit-packing/RLE
 - **Adaptive arithmetic coding** for high-compression scenarios
@@ -113,12 +109,12 @@ This library provides the core compression codecs including:
 - **Name tokenizer** - efficient read name compression
 - **SIMD optimizations** - SSE4, AVX2, and AVX512 support for faster encoding/decoding
 
-The htscodecs submodule is configured to use a specific branch (`fqz_seq_u32`) that includes 
-enhancements for sequence-based quality compression contexts, which significantly improve 
-compression ratios for ONT and PacBio data.
+The integrated htscodecs code is based on the `fqz_seq_u32` branch from the upstream repository, 
+which includes enhancements for sequence-based quality compression contexts. These enhancements 
+significantly improve compression ratios for ONT and PacBio data.
 
-The library is built automatically during the make process and statically linked into fqzcomp5, 
-so no separate installation of htscodecs is required.
+The htscodecs sources are located in the `htscodecs/` directory and are compiled and statically 
+linked into fqzcomp5 during the build process. No separate installation of htscodecs is required.
 
 Usage
 =====
@@ -494,14 +490,15 @@ TO DO
 - ~~Push more changes back into htscodecs upstream.  For now we're using
   our own fork.~~
 
-  **DONE**: The htscodecs library is now properly integrated as a git submodule,
-  using the `fqz_seq_u32` branch from the upstream repository 
-  (https://github.com/jkbonfield/htscodecs). This branch includes:
+  **DONE**: The htscodecs library is now fully integrated into the fqzcomp5 source tree.
+  The integrated code is based on the `fqz_seq_u32` branch from the upstream repository 
+  (https://github.com/jkbonfield/htscodecs), which includes:
   - Support for using sequence bases as quality compression context
   - SMALL_MODEL and SIMPLE_MODEL optimizations
   - All the necessary enhancements for fqzcomp5
   
-  The submodule configuration is in `.gitmodules` and the library is automatically
-  built during the make process. See the "Building and Installation" section for details.
+  The htscodecs sources are located in the `htscodecs/` directory and are automatically
+  compiled and statically linked during the build process. No submodule or separate 
+  installation is required. See the "Building and Installation" section for details.
 
 - Fuzz testing.
