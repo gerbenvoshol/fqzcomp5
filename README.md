@@ -222,9 +222,16 @@ bigger datasets as seen above
 TO DO
 =====
 
-- Include support for input and output of gzipped FASTQ.
+- ~~Include support for input and output of gzipped FASTQ.~~
 
-  For now, use something like `zcat in.fastq.gz | mbuffer | fqzcomp5 > out.fqz5`.
+  **DONE**: gzipped FASTQ files are now supported transparently. The tool
+  automatically detects `.gz` file extensions and handles compression/decompression
+  accordingly using kseq.h and zlib.
+  
+  Examples:
+  - Compress gzipped FASTQ: `fqzcomp5 input.fastq.gz output.fqz5`
+  - Decompress to gzipped FASTQ: `fqzcomp5 -d input.fqz5 output.fastq.gz`
+  - Works with stdin/stdout: `zcat input.fastq.gz | fqzcomp5 > output.fqz5`
 
 - Accept pairs of fastq files and do automatic interleaving.  This
   helps improve compression of read-names through deduplication and
