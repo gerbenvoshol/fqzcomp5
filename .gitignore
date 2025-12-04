@@ -1,0 +1,8 @@
+# Build artifacts
+*.o
+fqzcomp5
+
+# Test files
+*.fastq
+*.fastq.gz
+*.fqz5

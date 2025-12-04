@@ -1,7 +1,7 @@
 all: fqzcomp5
 
 INCLUDES=-Ihtscodecs
-LIBS=-Lhtscodecs/htscodecs/.libs -lhtscodecs
+LIBS=-Lhtscodecs/htscodecs/.libs -lhtscodecs -lz
 LDFLAGS=
 CFLAGS=-g -O3
 #CFLAGS=-g
