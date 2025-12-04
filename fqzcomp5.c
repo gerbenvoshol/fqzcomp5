@@ -33,17 +33,16 @@
  */
 
 /*
-File format:
+File format (Version 1):
 
-[Header]  TODO (magic number)
+[Header]
+8    Magic number: "FQZ5\001\000\000\000"  (FQZ5 followed by version 1.0.0)
+8    Index offset (0 if no index)
+
 [Block]*  Zero or more blocks of records
-[Index]   TODO: self index + metrics
 
-Where Block is:
-
+4    Block size (total bytes in this block, excluding this 4-byte field)
 4    Num records
-4    TODO: Total compressed block size
-[Block CRC]  TODO
 
 1    Name strategy
 4    NU: uncompressed name length
@@ -63,6 +62,13 @@ SC   Compressed sequence data
 4    QC: Compressed quality size
 QC   Compressed quality data
 
+[Index] (optional, at end of file)
+8    Magic: "FQZ5IDX\000"
+4    Number of blocks
+For each block:
+  8  File offset of block
+  4  Uncompressed size (total bases)
+  4  Number of records in block
 
  */
 
@@ -131,6 +137,25 @@ KSEQ_INIT(gzFile, gzread)
 // Review metrics stats every X blocks for Y trials
 #define METRICS_REVIEW 100
 #define METRICS_TRIAL 3
+
+// File format constants
+#define FQZ5_MAGIC "FQZ5\001\000\000\000"  // Magic + version 1.0.0
+#define FQZ5_MAGIC_LEN 8
+#define FQZ5_INDEX_MAGIC "FQZ5IDX\000"
+#define FQZ5_INDEX_MAGIC_LEN 8
+
+// Index entry for each block
+typedef struct {
+    uint64_t offset;       // File offset of block start
+    uint32_t usize;        // Uncompressed size (total bases)
+    uint32_t nrecords;     // Number of records in block
+} index_entry;
+
+// File index structure
+typedef struct {
+    uint32_t nblocks;      // Number of blocks
+    index_entry *entries;  // Array of index entries
+} fqz5_index;
 
 typedef enum {
     SEC_NAME,
@@ -1792,6 +1817,10 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
     unsigned int clen, comp_sz = 0;
     int strat = 0, method;
 
+    // Reserve space for block size (will be filled at the end)
+    uint32_t block_size_offset = comp_sz;
+    comp_sz += 4;  // Reserve 4 bytes for block size
+    
     APPEND_OUT(&fq->num_records, 4);
 
     //----------
@@ -1885,6 +1914,10 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
     gettimeofday(&tv2, NULL);
     update_stats(t, 2, fq->qual_len, clen+9, tvdiff(&tv1, &tv2));
 
+    // Fill in block size at the beginning (excluding the 4-byte block size field itself)
+    uint32_t block_size = comp_sz - 4;
+    *(uint32_t *)(comp + block_size_offset) = block_size;
+
     *out_size = comp_sz;
 
     return comp;
@@ -1905,6 +1938,10 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t) {
     uint32_t u_len, c_len;
     uint8_t c;
     struct timeval tv1, tv2;
+    uint32_t block_size;
+    
+    // Read block size (new format)
+    GET(&block_size, 4);
     
     GET(&nr, 4);
     fastq *fq = fastq_alloc(nr);
@@ -2082,8 +2119,122 @@ typedef struct {
     fastq *fq;
     char *comp;
     uint32_t clen;
+    uint32_t usize;      // Uncompressed size (for index)
+    uint32_t nrecords;   // Number of records (for index)
     int eof;
 } enc_dec_job;
+
+// Write FQZ5 file header
+static int write_header(FILE *fp) {
+    // Write magic number and version
+    if (fwrite(FQZ5_MAGIC, 1, FQZ5_MAGIC_LEN, fp) != FQZ5_MAGIC_LEN)
+        return -1;
+    
+    // Write index offset (0 for now, will be updated later)
+    uint64_t index_offset = 0;
+    if (fwrite(&index_offset, 1, 8, fp) != 8)
+        return -1;
+    
+    return 0;
+}
+
+// Read FQZ5 file header
+static int read_header(FILE *fp, uint64_t *index_offset) {
+    char magic[FQZ5_MAGIC_LEN];
+    
+    if (fread(magic, 1, FQZ5_MAGIC_LEN, fp) != FQZ5_MAGIC_LEN)
+        return -1;
+    
+    if (memcmp(magic, FQZ5_MAGIC, FQZ5_MAGIC_LEN) != 0) {
+        // Not a FQZ5 file or wrong version
+        // For backward compatibility, rewind to beginning
+        fseek(fp, 0, SEEK_SET);
+        *index_offset = 0;
+        return 1; // Return 1 to indicate old format
+    }
+    
+    if (fread(index_offset, 1, 8, fp) != 8)
+        return -1;
+    
+    return 0; // Return 0 to indicate new format
+}
+
+// Write index at end of file
+static int write_index(FILE *fp, fqz5_index *idx) {
+    if (!idx || idx->nblocks == 0)
+        return 0; // Nothing to write
+    
+    // Write index magic
+    if (fwrite(FQZ5_INDEX_MAGIC, 1, FQZ5_INDEX_MAGIC_LEN, fp) != FQZ5_INDEX_MAGIC_LEN)
+        return -1;
+    
+    // Write number of blocks
+    if (fwrite(&idx->nblocks, 1, 4, fp) != 4)
+        return -1;
+    
+    // Write index entries
+    for (uint32_t i = 0; i < idx->nblocks; i++) {
+        if (fwrite(&idx->entries[i].offset, 1, 8, fp) != 8)
+            return -1;
+        if (fwrite(&idx->entries[i].usize, 1, 4, fp) != 4)
+            return -1;
+        if (fwrite(&idx->entries[i].nrecords, 1, 4, fp) != 4)
+            return -1;
+    }
+    
+    return 0;
+}
+
+// Read index from file
+static fqz5_index *read_index(FILE *fp, uint64_t index_offset) {
+    if (index_offset == 0)
+        return NULL; // No index
+    
+    if (fseek(fp, index_offset, SEEK_SET) != 0)
+        return NULL;
+    
+    char magic[FQZ5_INDEX_MAGIC_LEN];
+    if (fread(magic, 1, FQZ5_INDEX_MAGIC_LEN, fp) != FQZ5_INDEX_MAGIC_LEN)
+        return NULL;
+    
+    if (memcmp(magic, FQZ5_INDEX_MAGIC, FQZ5_INDEX_MAGIC_LEN) != 0)
+        return NULL;
+    
+    fqz5_index *idx = calloc(1, sizeof(*idx));
+    if (!idx)
+        return NULL;
+    
+    if (fread(&idx->nblocks, 1, 4, fp) != 4) {
+        free(idx);
+        return NULL;
+    }
+    
+    idx->entries = calloc(idx->nblocks, sizeof(*idx->entries));
+    if (!idx->entries) {
+        free(idx);
+        return NULL;
+    }
+    
+    for (uint32_t i = 0; i < idx->nblocks; i++) {
+        if (fread(&idx->entries[i].offset, 1, 8, fp) != 8 ||
+            fread(&idx->entries[i].usize, 1, 4, fp) != 4 ||
+            fread(&idx->entries[i].nrecords, 1, 4, fp) != 4) {
+            free(idx->entries);
+            free(idx);
+            return NULL;
+        }
+    }
+    
+    return idx;
+}
+
+// Free index
+static void free_index(fqz5_index *idx) {
+    if (!idx)
+        return;
+    free(idx->entries);
+    free(idx);
+}
 
 static void *encode_thread(void *arg) {
     enc_dec_job *j = (enc_dec_job *)arg;
@@ -2091,6 +2242,7 @@ static void *encode_thread(void *arg) {
 	return j;
 
     j->comp = encode_block(j->gp, j->arg, j->fq, &j->t, &j->clen);
+    // j->usize and j->nrecords already set before dispatch
     fastq_free(j->fq);
     return j;
 }
@@ -2101,6 +2253,17 @@ static void *encode_thread(void *arg) {
 int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 	   timings *t) {
     int rans_methods = (1<<RANS0) | (1<<RANS1) | (1<<RANS129) | (1<<RANS193);
+
+    // Write file header with magic number
+    if (write_header(out_fp) < 0)
+        return -1;
+    
+    // Initialize index
+    fqz5_index idx = {0};
+    uint32_t idx_capacity = 1000;
+    idx.entries = calloc(idx_capacity, sizeof(*idx.entries));
+    if (!idx.entries)
+        return -1;
 
     // Name
     if (arg->nauto) {
@@ -2186,6 +2349,8 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 	memset(&j->t, 0, sizeof(j->t));
 	j->fq = fq;
 	j->eof = 0;
+	j->usize = fq->seq_len;  // Total uncompressed bases
+	j->nrecords = fq->num_records;
 
 	int ret = -1;
 	while (ret == -1) {
@@ -2215,7 +2380,23 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 			end = 1;
 		    } else {
 			append_timings(t, &jr->t, arg->verbose);
-			fwrite(&jr->clen, 1, 4, out_fp);
+			
+			// Track block offset for index
+			if (idx.nblocks >= idx_capacity) {
+			    idx_capacity *= 2;
+			    index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+			    if (!new_entries) {
+				free(idx.entries);
+				goto err;
+			    }
+			    idx.entries = new_entries;
+			}
+			idx.entries[idx.nblocks].offset = ftell(out_fp);
+			idx.entries[idx.nblocks].usize = jr->usize;
+			idx.entries[idx.nblocks].nrecords = jr->nrecords;
+			idx.nblocks++;
+			
+			// Block now includes block_size at the start, no need for extra length
 			fwrite(jr->comp, 1, jr->clen, out_fp);
 			free(jr->comp);
 		    }
@@ -2226,8 +2407,24 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 #else
 	uint32_t clen;
 	t->nblock++;
+	
+	// Track block offset for index
+	if (idx.nblocks >= idx_capacity) {
+	    idx_capacity *= 2;
+	    index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+	    if (!new_entries) {
+		free(idx.entries);
+		return -1;
+	    }
+	    idx.entries = new_entries;
+	}
+	idx.entries[idx.nblocks].offset = ftell(out_fp);
+	idx.entries[idx.nblocks].usize = fq->seq_len;
+	idx.entries[idx.nblocks].nrecords = fq->num_records;
+	idx.nblocks++;
+	
 	char *out = encode_block(gp, arg, fq, t, &clen);
-	fwrite(&clen, 1, 4, out_fp);
+	// Block now includes block_size at the start, no need for extra length
 	fwrite(out, 1, clen, out_fp);
 	free(out);
 
@@ -2249,7 +2446,25 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
 	    end = 1;
 	} else {
 	    append_timings(t, &j->t, arg->verbose);
-	    fwrite(&j->clen, 1, 4, out_fp);
+	    
+	    // Track block offset for index
+	    if (idx.nblocks >= idx_capacity) {
+		idx_capacity *= 2;
+		index_entry *new_entries = realloc(idx.entries, idx_capacity * sizeof(*idx.entries));
+		if (!new_entries) {
+		    free(idx.entries);
+		    hts_tpool_process_destroy(q);
+		    hts_tpool_destroy(p);
+		    return -1;
+		}
+		idx.entries = new_entries;
+	    }
+	    idx.entries[idx.nblocks].offset = ftell(out_fp);
+	    idx.entries[idx.nblocks].usize = j->usize;
+	    idx.entries[idx.nblocks].nrecords = j->nrecords;
+	    idx.nblocks++;
+	    
+	    // Block now includes block_size at the start, no need for extra length
 	    fwrite(j->comp, 1, j->clen, out_fp);
 	    free(j->comp);
 	}
@@ -2259,9 +2474,23 @@ int encode(FILE *in_fp, FILE *out_fp, fqz_gparams *gp, opts *arg,
     hts_tpool_destroy(p);
 #endif
 
+    // Write index at end of file
+    uint64_t index_offset = ftell(out_fp);
+    if (write_index(out_fp, &idx) < 0) {
+        free(idx.entries);
+        return -1;
+    }
+    
+    // Update header with index offset
+    fseek(out_fp, FQZ5_MAGIC_LEN, SEEK_SET);
+    fwrite(&index_offset, 1, 8, out_fp);
+    fseek(out_fp, 0, SEEK_END);
+    
+    free(idx.entries);
     return 0;
 
  err:
+    free(idx.entries);
     return -1;
 }
 
@@ -2814,6 +3043,13 @@ static void *decode_thread(void *arg) {
 }
 
 int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
+    uint64_t index_offset;
+    int header_result = read_header(in_fp, &index_offset);
+    if (header_result < 0)
+        return -1;
+    // header_result == 1 means old format (no header), data starts at offset 0
+    // header_result == 0 means new format with header
+    
 #ifdef THREADED
     int n = arg->nthread, end = 0;
     hts_tpool *p = hts_tpool_init(n);
@@ -2823,17 +3059,34 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 #endif
 
     for (;;) {
+	// Check if we've reached the index
+	uint64_t current_pos = ftell(in_fp);
+	if (index_offset > 0 && current_pos >= index_offset)
+	    break;
+	    
 	// Load next compressed block
-	int i, c_len;
+	int i;
+	uint32_t block_size;
 	unsigned char *comp;
 
-	// Total compressed size
-	if (fread(&c_len, 1, 4, in_fp) != 4)
+	// Read block size (first 4 bytes of block)
+	if (fread(&block_size, 1, 4, in_fp) != 4)
 	    break;
 
+	// Allocate buffer for entire block (including the block_size field we just read)
+	uint32_t c_len = block_size + 4;  // +4 for the block_size field itself
 	comp = malloc(c_len);
-	if (fread(comp, 1, c_len, in_fp) != c_len)
+	if (!comp)
 	    return -1;
+	
+	// Store the block_size we already read at the start
+	*(uint32_t *)comp = block_size;
+	
+	// Read the rest of the block (block_size bytes)
+	if (fread(comp + 4, 1, block_size, in_fp) != block_size) {
+	    free(comp);
+	    return -1;
+	}
 
 #ifdef THREADED
 	// Dispatch a job

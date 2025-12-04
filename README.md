@@ -9,13 +9,19 @@ currently a little slower than the v4.6 code, but this may potentially
 be fixable by compiling custom implementations for regularly used
 configurations.
 
-The file format is also now block based, typically between 100MB and
+The file format is block based, typically between 100MB and
 1GB in size.  This permits it to be more aggressively multi-threaded,
-but it harms the maximum compression ratio slightly.  In principle
-this also permits some level of random access, which for fastq
-practically means sub-dividing the data into blocks, e.g. for
-parallel dispatching to an aligner.  As yet the index has not been
-written to permit this.
+but it harms the maximum compression ratio slightly.
+
+**NEW**: The file format now includes:
+- A proper magic number (`FQZ5`) and version identifier
+- An index at the end of the file for random access capability
+- Better block structure with explicit block size metadata
+
+This permits coarse random access, which for FASTQ files practically
+means sub-dividing the data into blocks, e.g. for parallel dispatching
+to an aligner. The index enables seeking directly to specific blocks
+without reading the entire file.
 
 Compared to fqzcomp-4:
 
@@ -36,6 +42,38 @@ Compared to fqzcomp-4:
   choice of codecs permitted is one of the things tweaked by -1 to -9
   (only odd numbers implemented at the moment).  For example -9 has
   the most number of alternatives for fqzcomp_qual models.
+
+File Format
+===========
+
+The FQZ5 file format consists of:
+
+1. **Header** (16 bytes):
+   - Magic number: `FQZ5\001\000\000\000` (8 bytes) - identifies file as FQZ5 version 1.0.0
+   - Index offset: 8-byte unsigned integer pointing to the index location (0 if no index)
+
+2. **Data Blocks** (variable size):
+   Each block contains:
+   - Block size (4 bytes): Size of block data excluding this field
+   - Number of records (4 bytes)
+   - Compressed name data
+   - Compressed length data
+   - Compressed sequence data
+   - Compressed quality data
+
+3. **Index** (optional, at end of file):
+   - Index magic: `FQZ5IDX\000` (8 bytes)
+   - Number of blocks (4 bytes)
+   - For each block:
+     - File offset (8 bytes)
+     - Uncompressed size in bases (4 bytes)
+     - Number of records (4 bytes)
+
+The index enables random access by allowing seekers to jump directly to
+any block without decompressing previous blocks.
+
+**Backward Compatibility**: Files without the FQZ5 magic header are
+automatically detected and processed using the old format logic.
 
 Results
 =======
@@ -257,11 +295,31 @@ TO DO
   Example:
   - Decompress with names on third line: `fqzcomp5 -d -p input.fqz5 output.fastq`
 
-- Improve file format.  A proper magic number, better blocking
-  structure.
+- ~~Improve file format. A proper magic number, better blocking structure.~~
 
-- Implement (coarse) random access capability.  This is already
-  supported by the format, but lacks the necessary index.
+  **DONE**: The file format now includes:
+  - Magic number `FQZ5` with version identifier (version 1.0.0)
+  - Explicit block size metadata in each block
+  - Index offset in the header for quick index lookup
+  
+  The new format maintains backward compatibility - files without the magic
+  number are automatically detected and handled using the legacy format.
+
+- ~~Implement (coarse) random access capability. This is already
+  supported by the format, but lacks the necessary index.~~
+
+  **DONE**: Random access is now implemented via an index structure:
+  - Index is written at the end of each compressed file
+  - Contains block offsets, sizes, and record counts
+  - Enables seeking to specific blocks without decompressing preceding data
+  - Useful for parallel processing or selective decompression
+  
+  The index structure includes:
+  - File offset of each block
+  - Uncompressed size (number of bases) per block
+  - Number of records per block
+  
+  See the "File Format" section above for details.
 
 - Push more changes back into htscodecs upstream.  For now we're using
   out own fork.

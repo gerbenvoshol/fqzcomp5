@@ -2,7 +2,9 @@
 *.o
 fqzcomp5
 
-# Test files
+# Test files (but allow test_data directory)
 *.fastq
 *.fastq.gz
 *.fqz5
+!test_data/*.fastq
+!test_data/*.fqz5
