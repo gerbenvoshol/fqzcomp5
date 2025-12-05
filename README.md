@@ -209,19 +209,45 @@ Advanced Options
 ./fqzcomp5 -n 2 -s 1 -q 1 input.fastq output.fqz5
 ```
 
+Integrity Checking
+------------------
+
+FQZ5 v1.1 files include CRC32 checksums for data integrity verification.
+Checksums are automatically verified during decompression, and you can
+also perform a fast integrity check without decompressing:
+
+```bash
+# Quick integrity check (verifies all block CRCs)
+./fqzcomp5 --check file.fqz5
+
+# Verbose check (shows CRC for each block)
+./fqzcomp5 --check -v file.fqz5
+```
+
+The `--check` command:
+- Reads through all blocks without decompressing data
+- Verifies CRC32 checksum for each block
+- Reports any corruption detected
+- Much faster than full decompression
+- Returns exit code 0 if all checks pass, 1 if any errors found
+
+**Note**: Integrity checking is only available for v1.1 files. Older files
+(v1.0 or legacy format) do not have checksums and will report a warning.
+
 File Format
 ===========
 
 The FQZ5 file format consists of:
 
 1. **Header** (16 bytes):
-   - Magic number: `FQZ5\001\000\000\000` (8 bytes) - identifies file as FQZ5 version 1.0.0
+   - Magic number: `FQZ5\001\001\000\000` (8 bytes) - identifies file as FQZ5 version 1.1.0
    - Index offset: 8-byte unsigned integer pointing to the index location (0 if no index)
 
 2. **Data Blocks** (variable size):
    Each block contains:
    - Block size (4 bytes): Size of block data excluding this field
    - Number of records (4 bytes)
+   - **CRC32 checksum (4 bytes)**: Integrity check for block data (v1.1+)
    - Compressed name data
    - Compressed length data
    - Compressed sequence data
@@ -238,8 +264,18 @@ The FQZ5 file format consists of:
 The index enables random access by allowing seekers to jump directly to
 any block without decompressing previous blocks.
 
-**Backward Compatibility**: Files without the FQZ5 magic header are
-automatically detected and processed using the old format logic.
+**Integrity Checking**: FQZ5 v1.1 includes CRC32 checksums for each block,
+providing data integrity verification. Checksums are automatically verified
+during decompression. Use `--check` to quickly verify file integrity without
+decompressing:
+
+```bash
+./fqzcomp5 --check file.fqz5
+```
+
+**Backward Compatibility**: Files with version 1.0.0 magic (`FQZ5\001\000\000\000`)
+or without the FQZ5 magic header are automatically detected and processed
+using the legacy format logic. Version 1.0 files do not have CRC checksums.
 
 Results
 =======
