@@ -211,6 +211,43 @@ else
 fi
 
 echo ""
+echo "Test Group 6: Integrity Checking"
+echo "--------------------------------------"
+
+# Test 22: Verify integrity check passes on good file
+./fqzcomp5 test_data/sample.fastq "$TEST_DIR/integrity_test.fqz5" > /dev/null 2>&1
+if ./fqzcomp5 --check "$TEST_DIR/integrity_test.fqz5" > /dev/null 2>&1; then
+    print_result "Integrity check on valid file" "PASS"
+else
+    print_result "Integrity check on valid file" "FAIL"
+fi
+
+# Test 23: Verify integrity check detects corruption
+cp "$TEST_DIR/integrity_test.fqz5" "$TEST_DIR/corrupted.fqz5"
+# Corrupt the file by overwriting some bytes in the middle
+dd if=/dev/zero of="$TEST_DIR/corrupted.fqz5" bs=1 count=10 seek=100 conv=notrunc > /dev/null 2>&1
+if ! ./fqzcomp5 --check "$TEST_DIR/corrupted.fqz5" > /dev/null 2>&1; then
+    print_result "Integrity check detects corruption" "PASS"
+else
+    print_result "Integrity check detects corruption" "FAIL"
+fi
+
+# Test 24: Verify --check with verbose mode
+./fqzcomp5 test_data/sample.fastq "$TEST_DIR/verbose_check.fqz5" > /dev/null 2>&1
+if ./fqzcomp5 --check -v "$TEST_DIR/verbose_check.fqz5" 2>&1 | grep -q "CRC OK"; then
+    print_result "Integrity check verbose mode" "PASS"
+else
+    print_result "Integrity check verbose mode" "FAIL"
+fi
+
+# Test 25: Verify old format files report no CRC
+if ./fqzcomp5 --check test_data/sample.fqz5 2>&1 | grep -q "no CRC"; then
+    print_result "Old format files handled correctly" "PASS"
+else
+    print_result "Old format files handled correctly" "FAIL"
+fi
+
+echo ""
 echo "======================================"
 echo "Test Summary"
 echo "======================================"

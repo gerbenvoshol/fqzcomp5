@@ -3797,13 +3797,104 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
     return -1;
 }
 
+// Fast integrity check - verify CRC checksums without decompressing
+int check_integrity(FILE *in_fp, opts *arg) {
+    uint64_t index_offset;
+    int header_result = read_header(in_fp, &index_offset);
+    if (header_result < 0)
+        return -1;
+    
+    int file_version = header_result;
+    
+    if (file_version != 0) {
+        fprintf(stderr, "Warning: File is version 1.0 or older (no CRC checksums)\n");
+        fprintf(stderr, "Cannot verify integrity - file has no checksums.\n");
+        return -1;
+    }
+    
+    if (arg->verbose >= 0) {
+        printf("Checking file integrity...\n");
+    }
+    
+    int nblocks = 0;
+    int errors = 0;
+    
+    for (;;) {
+        // Check if we've reached the index
+        uint64_t current_pos = ftell(in_fp);
+        if (index_offset > 0 && current_pos >= index_offset)
+            break;
+            
+        // Read block size (first 4 bytes of block)
+        uint32_t block_size;
+        if (fread(&block_size, 1, 4, in_fp) != 4)
+            break;
+        
+        // Read num_records
+        uint32_t num_records;
+        if (fread(&num_records, 1, 4, in_fp) != 4) {
+            fprintf(stderr, "ERROR: Failed to read num_records in block %d\n", nblocks);
+            return -1;
+        }
+        
+        // Read stored CRC
+        uint32_t stored_crc;
+        if (fread(&stored_crc, 1, 4, in_fp) != 4) {
+            fprintf(stderr, "ERROR: Failed to read CRC in block %d\n", nblocks);
+            return -1;
+        }
+        
+        // Read the rest of the block data
+        uint32_t data_size = block_size - 8;  // Subtract num_records (4) and CRC (4)
+        unsigned char *data = malloc(data_size);
+        if (!data) {
+            fprintf(stderr, "ERROR: Failed to allocate memory for block %d\n", nblocks);
+            return -1;
+        }
+        
+        if (fread(data, 1, data_size, in_fp) != data_size) {
+            free(data);
+            fprintf(stderr, "ERROR: Failed to read data in block %d\n", nblocks);
+            return -1;
+        }
+        
+        // Compute CRC of the data
+        uint32_t computed_crc = crc32(0L, Z_NULL, 0);
+        computed_crc = crc32(computed_crc, data, data_size);
+        free(data);
+        
+        nblocks++;
+        
+        // Verify CRC
+        if (stored_crc != computed_crc) {
+            fprintf(stderr, "ERROR: CRC mismatch in block %d!\n", nblocks);
+            fprintf(stderr, "  Expected: 0x%08x, Got: 0x%08x\n", stored_crc, computed_crc);
+            errors++;
+        } else if (arg->verbose > 0) {
+            printf("Block %d: CRC OK (0x%08x)\n", nblocks, stored_crc);
+        }
+    }
+    
+    if (arg->verbose >= 0) {
+        if (errors == 0) {
+            printf("SUCCESS: All %d blocks verified OK\n", nblocks);
+        } else {
+            printf("FAILED: %d/%d blocks had CRC errors\n", errors, nblocks);
+        }
+    }
+    
+    return errors > 0 ? -1 : 0;
+}
+
 void usage(FILE *fp) {
     fprintf(fp, "Usage: fqzcomp5 [options]    [input.fastq [output.fqz5]]\n");
     fprintf(fp, "Usage: fqzcomp5 [options]    [input_R1.fastq input_R2.fastq output.fqz5]\n");
     fprintf(fp, "Usage: fqzcomp5 [options] -d [input.fqz5  [output.fastq]]\n");
     fprintf(fp, "Usage: fqzcomp5 [options] -d [input.fqz5  [output_R1.fastq output_R2.fastq]]\n");
+    fprintf(fp, "Usage: fqzcomp5 --check      [input.fqz5]\n");
     fprintf(fp, "\nOptions:\n");
     fprintf(fp, "    -d            Decompress\n");
+    fprintf(fp, "    --check       Verify file integrity (CRC checksums) without decompressing\n");
     fprintf(fp, "    -p            Output name on third line (+name instead of +)\n");
     fprintf(fp, "    -t INT        Number of threads.  Defaults to 4\n");
     fprintf(fp, "    -b SIZE       Specify block size. May use K, M and G sufixes\n");
@@ -3830,6 +3921,11 @@ void usage(FILE *fp) {
     fprintf(fp, "  during compression for better read-name compression.\n");
     fprintf(fp, "  When two output files are provided during decompression, the data is\n");
     fprintf(fp, "  automatically deinterleaved to separate R1 and R2 files.\n");
+    fprintf(fp, "\n");
+    fprintf(fp, "File Integrity:\n");
+    fprintf(fp, "  FQZ5 v1.1 files include CRC32 checksums for data integrity.\n");
+    fprintf(fp, "  Checksums are verified automatically during decompression.\n");
+    fprintf(fp, "  Use --check to quickly verify file integrity without decompressing.\n");
 }
 
 int main(int argc, char **argv) {
@@ -3864,6 +3960,19 @@ int main(int argc, char **argv) {
         _setmode(_fileno(stdin),  _O_BINARY);
         _setmode(_fileno(stdout), _O_BINARY);
 #endif
+
+    // Check for --check flag before getopt processing
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--check") == 0) {
+            arg.check_only = 1;
+            // Remove --check from argv so it doesn't interfere with getopt
+            for (int j = i; j < argc - 1; j++) {
+                argv[j] = argv[j + 1];
+            }
+            argc--;
+            break;
+        }
+    }
 
     extern char *optarg;
     extern int optind;
@@ -4034,6 +4143,26 @@ int main(int argc, char **argv) {
     if (optind == argc && isatty(0)) {
         usage(stdout);
         return 0;
+    }
+
+    // Handle --check mode
+    if (arg.check_only) {
+        if (argc - optind != 1) {
+            fprintf(stderr, "Error: --check requires exactly one input file\n");
+            usage(stderr);
+            return 1;
+        }
+        
+        const char *in_name = argv[optind];
+        FILE *in_fp = fopen(in_name, "rb");
+        if (!in_fp) {
+            perror(in_name);
+            return 1;
+        }
+        
+        int result = check_integrity(in_fp, &arg);
+        fclose(in_fp);
+        return result == 0 ? 0 : 1;
     }
 
     // Determine if we have paired files
