@@ -178,13 +178,13 @@ zcat input.fastq.gz | ./fqzcomp5 | ./fqzcomp5 -d > output.fastq
 
 # Use pigz for faster parallel compression
 ./fqzcomp5 -d input.fqz5 \
-    >(pigz -c > read1.fastq.gz) \
-    >(pigz -c > read2.fastq.gz)
+    >(pigz -c -p 2 > read1.fastq.gz) \
+    >(pigz -c -p 2 > read2.fastq.gz)
 
 # Compress from gzipped paired-end files
 ./fqzcomp5 \
-    <(zcat read1.fastq.gz) \
-    <(zcat read2.fastq.gz) \
+    <(pigz -d -c read1.fastq.gz) \
+    <(pigz -d -c read2.fastq.gz) \
     output.fqz5
 ```
 
