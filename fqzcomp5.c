@@ -3402,7 +3402,6 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
     j->file_version = file_version;
     j->file_version = file_version;
     j->eof = 1;
-    j->file_version = file_version;
     if (hts_tpool_dispatch(p, q, decode_thread, j) != 0)
 	goto err;
 
@@ -3523,7 +3522,6 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
     j = malloc(sizeof(*j));
     j->eof = 1;
     j->file_version = file_version;
-    j->file_version = file_version;
     if (hts_tpool_dispatch(p, q, decode_thread, j) != 0)
         goto err;
 
@@ -3606,11 +3604,6 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
         j->fq = NULL;
         j->eof = 0;
         j->file_version = file_version;
-        memset(&j->t, 0, sizeof(j->t));
-        j->comp = comp;
-        j->clen = c_len;
-        j->fq = NULL;
-        j->eof = 0;
 
         // Always put on queue, even if over queue size
         if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
