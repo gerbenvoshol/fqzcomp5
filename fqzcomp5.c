@@ -1686,7 +1686,7 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	// Allocate output buffer with extra space for potential /1 or /2 suffixes
 	// Each record could add "/1" or "/2" (2 bytes), so add 2*u_lenf extra bytes
 	// Check for potential overflow before calculations
-	if (u_lenf > UINT32_MAX / 2) {
+	if (u_lenf > SIZE_MAX / 2) {
 	    fprintf(stderr, "ERROR: Too many records for suffix calculation (u_lenf=%u)\n", u_lenf);
 	    free(out1);
 	    free(outf);
@@ -1699,7 +1699,9 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	size_t out_size = (size_t)u_len + suffix_space;
 	// Sanity check: the output should be reasonable in size
 	// In practice, names with suffixes shouldn't exceed twice the original size
-	if (out_size < u_len || out_size > (size_t)u_len * 2) {
+	// Check for overflow: out_size < u_len means wraparound occurred
+	// Also check: suffix_space > u_len means more than double the size which is unreasonable
+	if (out_size < u_len || suffix_space > u_len) {
 	    fprintf(stderr, "ERROR: Output size overflow in decode_names (u_len=%u, u_lenf=%u)\n",
 		    u_len, u_lenf);
 	    free(out1);
@@ -1729,7 +1731,8 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    int flag = 0;
 	    if (cpf < cpf_end)
 		flag = *cpf++;
-	    if ((flag & 1) && cp+2 <= cp_end) {
+	    // Need space for 2 bytes: '/' and '1'/'2'
+	    if ((flag & 1) && cp + 1 < cp_end) {
 		*cp++ = '/';
 		*cp++ = (flag & 2) ? '2' : '1';
 	    }
