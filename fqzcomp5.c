@@ -1506,14 +1506,14 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    }
 
 	    // Store the flag converted to FQZ_FREAD2 format
-	    if (decoded_flags) {
+	    if (decoded_flags && record_idx < u_lenf) {
 		// Convert name encoding flag to FQZ_FREAD2 flag
 		// flag bit 0 = has /NUM, flag bit 1 = /2 (if set, otherwise /1)
 		// For /2 reads: flag = 3 (bits 0 and 1 both set)
 		// For /1 reads: flag = 1 (only bit 0 set)
 		decoded_flags[record_idx] = ((flag & 3) == 3) ? FQZ_FREAD2 : 0;
-		record_idx++;
 	    }
+	    record_idx++;
 
 	    if (cp == last_cp)
 		// ran out of data early; avoids looping forever
