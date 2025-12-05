@@ -1848,6 +1848,10 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
     comp_sz += 4;  // Reserve 4 bytes for block size
     
     APPEND_OUT(&fq->num_records, 4);
+    
+    // Reserve space for CRC32 (will be filled at the end)
+    uint32_t crc_offset = comp_sz;
+    comp_sz += 4;  // Reserve 4 bytes for CRC
 
     //----------
     // Names: tok3
@@ -1940,19 +1944,13 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
     gettimeofday(&tv2, NULL);
     update_stats(t, 2, fq->qual_len, clen+9, tvdiff(&tv1, &tv2));
 
-    // Reallocate to make space for CRC right after num_records
-    comp = realloc(comp, comp_sz + 4);
-    // Move data to make room for CRC after num_records (at position 8)
-    memmove(comp + 12, comp + 8, comp_sz - 8);  // shift data after num_records
-    comp_sz += 4;
-    
-    // Compute CRC32 for the block data (from position 12 onwards, after we've inserted the space)
+    // Compute CRC32 for the block data (from position 12 onwards)
     // CRC is computed on all data after the CRC field itself
     uint32_t block_crc = crc32(0L, Z_NULL, 0);
     block_crc = crc32(block_crc, (unsigned char *)(comp + 12), comp_sz - 12);
     
-    // Insert CRC at position 8 (after block_size and num_records)
-    *(uint32_t *)(comp + 8) = block_crc;
+    // Insert CRC at the reserved position (position 8, after block_size and num_records)
+    *(uint32_t *)(comp + crc_offset) = block_crc;
     
     // Update block size to include CRC and all the data
     *(uint32_t *)(comp + block_size_offset) = comp_sz - 4;
