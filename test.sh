@@ -340,6 +340,23 @@ else
 fi
 
 echo ""
+echo "Test Group 8: Regression Tests"
+echo "--------------------------------------"
+
+# Test 32: SRR1238539 name pattern regression (segfault with -3, -5, -7, -9)
+# This tests the fix for NULL pointer dereference in search_trie when trie lookup fails
+./fqzcomp5 -3 -t 1 test_data/regression_srr1238539.fastq "$TEST_DIR/regression_srr.fqz5" > /dev/null 2>&1
+./fqzcomp5 -d "$TEST_DIR/regression_srr.fqz5" "$TEST_DIR/regression_srr.fastq" > /dev/null 2>&1
+verify_identical test_data/regression_srr1238539.fastq "$TEST_DIR/regression_srr.fastq" "SRR1238539 pattern regression test (level -3)"
+
+# Test 33-36: Verify all compression levels work with SRR1238539 pattern
+for level in 5 7 9; do
+    ./fqzcomp5 -$level -t 1 test_data/regression_srr1238539.fastq "$TEST_DIR/regression_srr_${level}.fqz5" > /dev/null 2>&1
+    ./fqzcomp5 -d "$TEST_DIR/regression_srr_${level}.fqz5" "$TEST_DIR/regression_srr_${level}.fastq" > /dev/null 2>&1
+    verify_identical test_data/regression_srr1238539.fastq "$TEST_DIR/regression_srr_${level}.fastq" "SRR1238539 pattern regression test (level -$level)"
+done
+
+echo ""
 echo "======================================"
 echo "Test Summary"
 echo "======================================"

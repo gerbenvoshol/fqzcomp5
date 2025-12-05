@@ -663,8 +663,8 @@ int search_trie(name_context *ctx, char *data, size_t len, int n, int *exact, in
 
 //          t = t->next[c];
 
-//          if (!t)
-//              return -1;
+            if (!t)
+                break;
 
             from = t->n;
             if (i == prefix_len) p3 = t->n;
