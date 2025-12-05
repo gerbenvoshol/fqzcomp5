@@ -1467,6 +1467,12 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	unsigned int *decoded_flags = NULL;
 	if (out_flags) {
 	    decoded_flags = malloc(u_lenf * sizeof(unsigned int));
+	    if (!decoded_flags) {
+		free(out1);
+		free(outf);
+		free(out2);
+		goto err;
+	    }
 	}
 
 	// Stitch together ID + flag + comment
@@ -1502,8 +1508,10 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    // Store the flag converted to FQZ_FREAD2 format
 	    if (decoded_flags) {
 		// Convert name encoding flag to FQZ_FREAD2 flag
-		// flag bit 0 = has /NUM, flag bit 1 = /2 (vs /1)
-		decoded_flags[record_idx] = ((flag & 1) && (flag & 2)) ? FQZ_FREAD2 : 0;
+		// flag bit 0 = has /NUM, flag bit 1 = /2 (if set, otherwise /1)
+		// For /2 reads: flag = 3 (bits 0 and 1 both set)
+		// For /1 reads: flag = 1 (only bit 0 set)
+		decoded_flags[record_idx] = ((flag & 3) == 3) ? FQZ_FREAD2 : 0;
 		record_idx++;
 	    }
 
@@ -1517,7 +1525,11 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 		free(out1);
 		free(outf);
 		free(out2);
-		free(decoded_flags);
+		if (decoded_flags) {
+		    free(decoded_flags);
+		    if (out_flags)
+			*out_flags = NULL;
+		}
 		goto err;
 	    }
 	    last_cp = cp;
