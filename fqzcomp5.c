@@ -1279,7 +1279,8 @@ char *decode_seq(unsigned char *in,  unsigned int in_size,
 }
 
 static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
-			  int strat, int level, unsigned int *out_size) {
+			  int strat, int level, unsigned int *out_size,
+			  unsigned int *fq_flags, int num_records) {
     // TODO: work out a better maximum bound
     char *nout = malloc(name_len*2+1000), *cp = nout;
     
@@ -1347,6 +1348,27 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 		    f |= 3, w1end -= 2;
 	    }
 
+	    // Use fq_flags array if provided to set /1 or /2 flag
+	    // This is crucial for paired-end reads that don't have explicit /1 /2 in names
+	    if (fq_flags && nr < num_records) {
+		if (fq_flags[nr] & FQZ_FREAD2) {
+		    // Mark as /2
+		    if (!(f & 1)) {
+			// Doesn't already have /1 or /2, so add /2
+			f |= 3;  // bit 0 (has /NUM) + bit 1 (/2)
+		    } else if (!(f & 2)) {
+			// Has /1, change to /2
+			f |= 2;  // set bit 1 to make it /2
+		    }
+		} else {
+		    // Mark as /1 or no flag
+		    if (!(f & 1)) {
+			// Doesn't already have /1 or /2, so add /1
+			f |= 1;  // bit 0 only (has /1)
+		    }
+		}
+	    }
+
 	    flag[nr++] = f;
 	    memcpy(cp1, &name_buf[i], w1end-i);
 	    cp1[w1end-i]=0;
@@ -1400,7 +1422,7 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 }
 
 static char *decode_names(unsigned char *comp,  unsigned int c_len,
-			  unsigned int u_len, int strat) {
+			  unsigned int u_len, int strat, unsigned int **out_flags, int *out_num_records) {
     unsigned char *out;
 
     if (strat == 0) {
@@ -1409,8 +1431,18 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	out = malloc(u_len);
 	u_len = unlzp(rout, ru_len, out);
 	free(rout);
+	// No flag array for strat 0
+	if (out_flags)
+	    *out_flags = NULL;
+	if (out_num_records)
+	    *out_num_records = 0;
     } else if (strat == 1) {
 	out = tok3_decode_names(comp, c_len, &u_len);
+	// No flag array for strat 1
+	if (out_flags)
+	    *out_flags = NULL;
+	if (out_num_records)
+	    *out_num_records = 0;
     } else {
 	uint32_t clen1 = *(uint32_t *)comp;
 	uint32_t clenf = *(uint32_t *)(comp+4);
@@ -1431,6 +1463,18 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    free(rout);
 	}
 
+	// Allocate array to store decoded flags
+	unsigned int *decoded_flags = NULL;
+	if (out_flags) {
+	    decoded_flags = malloc(u_lenf * sizeof(unsigned int));
+	    if (!decoded_flags) {
+		free(out1);
+		free(outf);
+		free(out2);
+		goto err;
+	    }
+	}
+
 	// Stitch together ID + flag + comment
 	unsigned char *cp1 = out1, *cp1_end = out1+u_len1;
 	unsigned char *cpf = outf, *cpf_end = outf+u_lenf;
@@ -1438,6 +1482,7 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	out = malloc(u_len);
 	unsigned char *cp  = out,  *cp_end = out + u_len;
 	unsigned char *last_cp = NULL;
+	int record_idx = 0;
 	while (cp < cp_end) {
 	    while (cp1 < cp1_end && cp < cp_end && *cp1)
 		*cp++ = *cp1++;
@@ -1460,6 +1505,16 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 		cp2++;
 	    }
 
+	    // Store the flag converted to FQZ_FREAD2 format
+	    if (decoded_flags && record_idx < u_lenf) {
+		// Convert name encoding flag to FQZ_FREAD2 flag
+		// flag bit 0 = has /NUM, flag bit 1 = /2 (if set, otherwise /1)
+		// For /2 reads: flag = 3 (bits 0 and 1 both set)
+		// For /1 reads: flag = 1 (only bit 0 set)
+		decoded_flags[record_idx] = ((flag & 3) == 3) ? FQZ_FREAD2 : 0;
+	    }
+	    record_idx++;
+
 	    if (cp == last_cp)
 		// ran out of data early; avoids looping forever
 		break;
@@ -1470,6 +1525,11 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 		free(out1);
 		free(outf);
 		free(out2);
+		if (decoded_flags) {
+		    free(decoded_flags);
+		    if (out_flags)
+			*out_flags = NULL;
+		}
 		goto err;
 	    }
 	    last_cp = cp;
@@ -1478,6 +1538,11 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	free(out1);
 	free(outf);
 	free(out2);
+	
+	if (out_flags)
+	    *out_flags = decoded_flags;
+	if (out_num_records)
+	    *out_num_records = record_idx;
     }
 
     return (char *)out;
@@ -1715,7 +1780,7 @@ char *compress_with_methods(fqz_gparams *gp,  opts *arg, fastq *fq,
 
 	case TLZP3:
 	    out = encode_names(in, in_size, 0 /* LZP + rANS o5 */,
-			       (m-TOK3_3)*2+3, out_size);
+			       (m-TOK3_3)*2+3, out_size, fq->flag, fq->num_records);
 	    out_len = *out_size;
 	    break;
 
@@ -1724,7 +1789,7 @@ char *compress_with_methods(fqz_gparams *gp,  opts *arg, fastq *fq,
 	case TOK3_7:
 	case TOK3_9:
 	    out = encode_names(in, in_size, 1 /* TOK3 */,
-			       (m-TOK3_3)*2+3, out_size);
+			       (m-TOK3_3)*2+3, out_size, fq->flag, fq->num_records);
 	    out_len = *out_size;
 	    break;
 
@@ -1733,7 +1798,7 @@ char *compress_with_methods(fqz_gparams *gp,  opts *arg, fastq *fq,
 	case TOK3_7_LZP:
 	case TOK3_9_LZP:
 	    out = encode_names(in, in_size, 2 /* TOK3+LZP */,
-			       (m-TOK3_3_LZP)*2+3, out_size);
+			       (m-TOK3_3_LZP)*2+3, out_size, fq->flag, fq->num_records);
 	    out_len = *out_size;
 	    break;
 
@@ -1870,7 +1935,7 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
 				&clen, &strat, &t->nmeth);
 #else
     out = encode_names((uint8_t *)fq->name_buf, fq->name_len, arg->nstrat,
-		       arg->nlevel, &clen);
+		       arg->nlevel, &clen, fq->flag, fq->num_records);
 #endif
     APPEND_OUT(out, clen);
     free(out);
@@ -2014,7 +2079,9 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
     comp = in+in_off;
     in_off += c_len;
 
-    out = (unsigned char *)decode_names(comp, c_len, u_len, c);
+    unsigned int *decoded_flags = NULL;
+    int num_decoded_records = 0;
+    out = (unsigned char *)decode_names(comp, c_len, u_len, c, &decoded_flags, &num_decoded_records);
     fq->name_buf = (char *)out;
     fq->name_len = u_len;
 
@@ -2026,22 +2093,30 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
         for (i = 0; i < nr; i++) {
             fq->name[i] = name_i;
             
-            // Determine flag by checking name suffix or comparing with previous name
+            // Use decoded flags if available (from strat==2), otherwise parse from name
             int flag = 0;
-            int name_len = strlen(np);
-            if (name_len > 1 && np[name_len-1] == '2' && np[name_len-2] == '/')
-                flag = FQZ_FREAD2;
-            else if (last_name >= 0 &&
-                strcmp(fq->name_buf + fq->name[i], fq->name_buf + last_name) == 0)
-                flag = FQZ_FREAD2;
+            if (decoded_flags && i < num_decoded_records) {
+                flag = decoded_flags[i];
+            } else {
+                // Fallback: determine flag by checking name suffix or comparing with previous name
+                int name_len = strlen(np);
+                if (name_len > 1 && np[name_len-1] == '2' && np[name_len-2] == '/')
+                    flag = FQZ_FREAD2;
+                else if (last_name >= 0 &&
+                    strcmp(fq->name_buf + fq->name[i], fq->name_buf + last_name) == 0)
+                    flag = FQZ_FREAD2;
+            }
             fq->flag[i] = flag;
             
             if (!flag)
                 last_name = fq->name[i];
             
-            name_i += name_len + 1;  // +1 for null terminator
-            np += name_len + 1;
+            name_i += strlen(np) + 1;  // +1 for null terminator
+            np += strlen(np) + 1;
         }
+        
+        // Free decoded flags array
+        free(decoded_flags);
     }
 
     gettimeofday(&tv2, NULL);
