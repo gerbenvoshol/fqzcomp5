@@ -733,6 +733,8 @@ static int encode_name(name_context *ctx, char *name, int len, int mode) {
     int ntok = 1;
     i = 0;
     if (is_fixed) {
+        if (ntok >= MAX_TOKENS)
+            return -1;
         if (ntok >= ctx->max_tok) {
             memset(&ctx->desc[ctx->max_tok << 4], 0, 16*sizeof(ctx->desc[0]));
             memset(&ctx->token_dcount[ctx->max_tok], 0, sizeof(int));
@@ -755,6 +757,8 @@ static int encode_name(name_context *ctx, char *name, int len, int mode) {
     }
 
     for (; i < len; i++) {
+        if (ntok >= MAX_TOKENS)
+            return -1;
         if (ntok >= ctx->max_tok) {
             memset(&ctx->desc[ctx->max_tok << 4], 0, 16*sizeof(ctx->desc[0]));
             memset(&ctx->token_dcount[ctx->max_tok], 0, sizeof(int));
