@@ -463,10 +463,11 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         }
         
         if (name_i + total_name_len + 1 >= name_sz) {
-            // Ensure at least 2x growth or enough for this record
+            // Calculate exact required size, ensuring at least 2x growth
+            size_t required = name_i + total_name_len + 1;
             size_t new_sz = name_sz ? (name_sz << 1) : 1000;
-            while (new_sz < name_i + total_name_len + 1)
-                new_sz <<= 1;
+            if (new_sz < required)
+                new_sz = required;
             name_sz = new_sz;
             name_buf = fq->name_buf = realloc(fq->name_buf, name_sz);
         }
@@ -496,10 +497,11 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         // Store sequence
         fq->seq[nr] = seq_i;
         if (seq_i + seq->seq.l >= seq_sz) {
-            // Ensure at least 2x growth or enough for this record
+            // Calculate exact required size, ensuring at least 2x growth
+            size_t required = seq_i + seq->seq.l;
             size_t new_sz = seq_sz ? (seq_sz << 1) : 1000;
-            while (new_sz < seq_i + seq->seq.l)
-                new_sz <<= 1;
+            if (new_sz < required)
+                new_sz = required;
             seq_sz = new_sz;
             seq_buf = fq->seq_buf = realloc(fq->seq_buf, seq_sz);
         }
@@ -516,10 +518,11 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         // Store quality
         fq->qual[nr] = qual_i;
         if (qual_i + seq->qual.l >= qual_sz) {
-            // Ensure at least 2x growth or enough for this record
+            // Calculate exact required size, ensuring at least 2x growth
+            size_t required = qual_i + seq->qual.l;
             size_t new_sz = qual_sz ? (qual_sz << 1) : 1000;
-            while (new_sz < qual_i + seq->qual.l)
-                new_sz <<= 1;
+            if (new_sz < required)
+                new_sz = required;
             qual_sz = new_sz;
             qual_buf = fq->qual_buf = realloc(fq->qual_buf, qual_sz);
         }
