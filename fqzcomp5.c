@@ -1380,6 +1380,8 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 			  unsigned int *fq_flags, int num_records) {
     // TODO: work out a better maximum bound
     char *nout = malloc(name_len*2+1000), *cp = nout;
+    if (!nout)
+	return NULL;
     
     *(uint32_t *)cp = name_len; cp += 4;
     *cp++ = strat; // name method;
@@ -1388,6 +1390,10 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 	unsigned char *lzp_out = (unsigned char *)cp;
 	unsigned int clen = lzp(name_buf, name_len, lzp_out);
 	unsigned char *out = rans_compress_4x16(lzp_out, clen, &clen, 5);
+	if (!out) {
+	    free(nout);
+	    return NULL;
+	}
 	*(uint32_t *)cp = clen; cp += 4;
 	memcpy(cp, out, clen);  cp += clen;
 	free(out);
@@ -1396,6 +1402,10 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 	int clen;
 	unsigned char *out = tok3_encode_names((char *)name_buf, name_len,
 					       level, 0, &clen, NULL);
+	if (!out) {
+	    free(nout);
+	    return NULL;
+	}
 	*(uint32_t *)cp = clen; cp += 4;
 	memcpy(cp, out, clen);  cp += clen;
 	free(out);
