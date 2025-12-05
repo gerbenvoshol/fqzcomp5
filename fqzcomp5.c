@@ -3861,6 +3861,15 @@ int inspect_file(FILE *in_fp, opts *arg) {
         if (fread(&block_size, 1, 4, in_fp) != 4)
             break;
         
+        // Validate block size to prevent underflow
+        if (has_crc && block_size < 8) {
+            fprintf(stderr, "Warning: Invalid block size %u in block %d (too small)\n", block_size, nblocks);
+            break;
+        } else if (!has_crc && block_size < 4) {
+            fprintf(stderr, "Warning: Invalid block size %u in block %d (too small)\n", block_size, nblocks);
+            break;
+        }
+        
         // Read num_records
         uint32_t num_records;
         if (fread(&num_records, 1, 4, in_fp) != 4) {
@@ -3910,10 +3919,16 @@ int inspect_file(FILE *in_fp, opts *arg) {
             if (ptr < end) {
                 ptr++; // skip name_strat
                 if (ptr + 8 <= end) {
-                    uint32_t name_usize = *(uint32_t*)ptr; ptr += 4;
-                    uint32_t name_csize = *(uint32_t*)ptr; ptr += 4;
-                    ptr += name_csize;
+                    uint32_t name_usize, name_csize;
+                    memcpy(&name_usize, ptr, 4); ptr += 4;
+                    memcpy(&name_csize, ptr, 4); ptr += 4;
                     total_uncompressed += name_usize;
+                    if (ptr + name_csize <= end) {
+                        ptr += name_csize;
+                    } else {
+                        // Compressed data extends beyond block - file may be truncated
+                        ptr = end;
+                    }
                 }
             }
             
@@ -3927,16 +3942,22 @@ int inspect_file(FILE *in_fp, opts *arg) {
             // Sequence section
             if (ptr + 9 <= end) {
                 ptr++; // skip seq_strat
-                uint32_t seq_usize = *(uint32_t*)ptr; ptr += 4;
-                uint32_t seq_csize = *(uint32_t*)ptr; ptr += 4;
-                ptr += seq_csize;
+                uint32_t seq_usize, seq_csize;
+                memcpy(&seq_usize, ptr, 4); ptr += 4;
+                memcpy(&seq_csize, ptr, 4); ptr += 4;
                 total_uncompressed += seq_usize; // Sequence bases
-                
-                // Quality section should match sequence size
-                if (ptr + 9 <= end) {
-                    ptr++; // skip qual_strat
-                    ptr += 8; // skip qual_usize and qual_csize
-                    // Don't double count - quality is same size as sequence
+                if (ptr + seq_csize <= end) {
+                    ptr += seq_csize;
+                    
+                    // Quality section should match sequence size
+                    if (ptr + 9 <= end) {
+                        ptr++; // skip qual_strat
+                        ptr += 8; // skip qual_usize and qual_csize
+                        // Don't double count - quality is same size as sequence
+                    }
+                } else {
+                    // Compressed data extends beyond block - file may be truncated
+                    ptr = end;
                 }
             }
             
@@ -3971,13 +3992,13 @@ int inspect_file(FILE *in_fp, opts *arg) {
     }
     
     // Try to detect interleaving
-    // Heuristic: if we have an even number of records, it might be interleaved
-    // More sophisticated detection would require parsing read names
+    // Note: This is a simple heuristic based on record count
+    // True detection would require parsing read name patterns
     if (total_records > 0) {
         if (total_records % 2 == 0) {
-            printf("Interleaved:         Possibly (even number of records)\n");
+            printf("Interleaved:         Possibly (even record count - heuristic)\n");
         } else {
-            printf("Interleaved:         No (odd number of records)\n");
+            printf("Interleaved:         No (odd record count)\n");
         }
     }
     
