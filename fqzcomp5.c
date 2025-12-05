@@ -1682,7 +1682,11 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	unsigned char *cp1 = out1, *cp1_end = out1+u_len1;
 	unsigned char *cpf = outf, *cpf_end = outf+u_lenf;
 	unsigned char *cp2 = out2, *cp2_end = out2 + u_len2;
-	out = malloc(u_len);
+	
+	// Allocate output buffer with extra space for potential /1 or /2 suffixes
+	// Each record could add "/1" or "/2" (2 bytes), so add 2*u_lenf extra bytes
+	unsigned int out_size = u_len + 2 * u_lenf;
+	out = malloc(out_size);
 	if (!out) {
 	    free(out1);
 	    free(outf);
@@ -1691,7 +1695,7 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 		free(decoded_flags);
 	    goto err;
 	}
-	unsigned char *cp  = out,  *cp_end = out + u_len;
+	unsigned char *cp  = out,  *cp_end = out + out_size;  // Use out_size not u_len
 	unsigned char *last_cp = NULL;
 	int record_idx = 0;
 	while (cp < cp_end) {
