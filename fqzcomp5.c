@@ -1472,22 +1472,16 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 
 	    // Use fq_flags array if provided to set /1 or /2 flag
 	    // This is crucial for paired-end reads that don't have explicit /1 /2 in names
-	    if (fq_flags && nr < num_records) {
-		if (fq_flags[nr] & FQZ_FREAD2) {
-		    // Mark as /2
-		    if (!(f & 1)) {
-			// Doesn't already have /1 or /2, so add /2
-			f |= 3;  // bit 0 (has /NUM) + bit 1 (/2)
-		    } else if (!(f & 2)) {
-			// Has /1, change to /2
-			f |= 2;  // set bit 1 to make it /2
-		    }
-		} else {
-		    // Mark as /1 or no flag
-		    if (!(f & 1)) {
-			// Doesn't already have /1 or /2, so add /1
-			f |= 1;  // bit 0 only (has /1)
-		    }
+	    // Only apply this logic if fq_flags indicates this is actually a /2 read
+	    // (i.e., we're in paired-end mode)
+	    if (fq_flags && nr < num_records && (fq_flags[nr] & FQZ_FREAD2)) {
+		// This is an R2 read in paired-end mode, mark as /2
+		if (!(f & 1)) {
+		    // Doesn't already have /1 or /2, so add /2
+		    f |= 3;  // bit 0 (has /NUM) + bit 1 (/2)
+		} else if (!(f & 2)) {
+		    // Has /1, change to /2
+		    f |= 2;  // set bit 1 to make it /2
 		}
 	    }
 
