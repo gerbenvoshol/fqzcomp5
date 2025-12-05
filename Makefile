@@ -9,10 +9,11 @@ LIBS = -lz -lm -lbz2 -pthread
 
 # Debug build flags
 DEBUG_CFLAGS = -g -O0 -Wall
-DEBUG_LDFLAGS =
+DEBUG_LDFLAGS =  # Empty: debug builds use no special linker flags
 
-# Static build flags
+# Static build flags  
 STATIC_LDFLAGS = -static
+STATIC_BUILD_LDFLAGS = -Wl,-O1 -Wl,--as-needed $(STATIC_LDFLAGS)
 
 # Main fqzcomp5 objects
 FQZCOMP5_OBJ = fqzcomp5.o lzp16e.o thread_pool.o
@@ -72,7 +73,7 @@ fqzcomp5-debug: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
 
 # Static build (statically linked executable)
 # Note: Run 'make clean' first when switching between build types
-static: LDFLAGS = $(STATIC_LDFLAGS)
+static: LDFLAGS = $(STATIC_BUILD_LDFLAGS)
 static: fqzcomp5-static
 
 fqzcomp5-static: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
