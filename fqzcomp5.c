@@ -4112,7 +4112,6 @@ int inspect_file(FILE *in_fp, opts *arg) {
                 ptr++; // skip len_strat
                 if (len_strat > 0) {
                     // Fixed length - skip the varint encoded length
-                    uint32_t fixed_len;
                     int nb = 0;
                     // Simple varint decode to advance ptr
                     while (ptr < end && nb < 5) {
@@ -4128,7 +4127,12 @@ int inspect_file(FILE *in_fp, opts *arg) {
                     if (ptr + 4 <= end) {
                         uint32_t blen;
                         memcpy(&blen, ptr, 4);
-                        ptr += 4 + blen;
+                        // Bounds check before advancing pointer
+                        if (ptr + 4 + blen <= end) {
+                            ptr += 4 + blen;
+                        } else {
+                            ptr = end;  // Truncated data
+                        }
                     }
                 }
             }
