@@ -4114,7 +4114,7 @@ int inspect_file(FILE *in_fp, opts *arg) {
                     // Fixed length - skip the varint encoded length
                     int nb = 0;
                     // Simple varint decode to advance ptr
-                    while (ptr < end && nb < 5) {
+                    while (ptr + nb < end && nb < 5) {
                         if ((ptr[nb] & 0x80) == 0) {
                             nb++;
                             break;
@@ -4127,11 +4127,21 @@ int inspect_file(FILE *in_fp, opts *arg) {
                     if (ptr + 4 <= end) {
                         uint32_t blen;
                         memcpy(&blen, ptr, 4);
-                        // Bounds check before advancing pointer
-                        if (ptr + 4 + blen <= end) {
-                            ptr += 4 + blen;
+                        // Validate blen to prevent integer overflow
+                        // Reasonable upper bound: blocks are typically < 1GB
+                        if (blen > 0 && blen < 1000000000) {
+                            // Bounds check before advancing pointer
+                            if (ptr + 4 + blen <= end) {
+                                ptr += 4 + blen;
+                            } else {
+                                ptr = end;  // Truncated data
+                            }
+                        } else if (blen == 0) {
+                            // Empty variable length section, just skip the length field
+                            ptr += 4;
                         } else {
-                            ptr = end;  // Truncated data
+                            // Suspicious blen value, treat as truncated
+                            ptr = end;
                         }
                     }
                 }
