@@ -1501,6 +1501,7 @@ typedef struct {
     int nthread;
     int plus_name;               // output name on third line (+name)
     int check_only;              // only verify integrity, don't decompress
+    int inspect_only;            // inspect file and show metadata
     int verify_crc;              // verify CRC during decompression (enabled by default for v1.1)
 } opts;
 
@@ -3803,6 +3804,208 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
     return -1;
 }
 
+// Inspect FQZ5 file and display comprehensive information
+int inspect_file(FILE *in_fp, opts *arg) {
+    uint64_t index_offset;
+    int header_result = read_header(in_fp, &index_offset);
+    
+    // Determine file version
+    const char *version_str;
+    int has_crc = 0;
+    if (header_result < 0) {
+        fprintf(stderr, "Error: Failed to read file header\n");
+        return -1;
+    } else if (header_result == 0) {
+        version_str = "1.1 (current)";
+        has_crc = 1;
+    } else if (header_result == 1) {
+        version_str = "1.0 (legacy)";
+        has_crc = 0;
+    } else {
+        version_str = "pre-1.0 (legacy, no header)";
+        has_crc = 0;
+    }
+    
+    printf("FQZ5 File Inspection\n");
+    printf("====================\n\n");
+    
+    // Display version
+    printf("Format Version:      %s\n", version_str);
+    
+    // Get file size
+    fseek(in_fp, 0, SEEK_END);
+    uint64_t file_size = ftell(in_fp);
+    fseek(in_fp, FQZ5_MAGIC_LEN + 8, SEEK_SET); // Skip header
+    if (header_result == 2) {
+        fseek(in_fp, 0, SEEK_SET); // Old format, no header
+    }
+    
+    printf("Compressed Size:     %llu bytes (%.2f MB)\n", 
+           (unsigned long long)file_size, file_size / 1048576.0);
+    
+    // Parse blocks to gather statistics
+    int nblocks = 0;
+    uint64_t total_uncompressed = 0;
+    uint64_t total_records = 0;
+    uint64_t total_compressed_data = 0;
+    int integrity_errors = 0;
+    
+    for (;;) {
+        // Check if we've reached the index
+        uint64_t current_pos = ftell(in_fp);
+        if (index_offset > 0 && current_pos >= index_offset)
+            break;
+            
+        // Read block size (first 4 bytes of block)
+        uint32_t block_size;
+        if (fread(&block_size, 1, 4, in_fp) != 4)
+            break;
+        
+        // Read num_records
+        uint32_t num_records;
+        if (fread(&num_records, 1, 4, in_fp) != 4) {
+            fprintf(stderr, "Warning: Failed to read num_records in block %d\n", nblocks);
+            break;
+        }
+        
+        total_records += num_records;
+        total_compressed_data += block_size;
+        
+        // If we have CRC, read and verify it
+        if (has_crc) {
+            uint32_t stored_crc;
+            if (fread(&stored_crc, 1, 4, in_fp) != 4) {
+                fprintf(stderr, "Warning: Failed to read CRC in block %d\n", nblocks);
+                break;
+            }
+            
+            // Read the rest of the block data
+            uint32_t data_size = block_size - 8;  // Subtract num_records (4) and CRC (4)
+            unsigned char *data = malloc(data_size);
+            if (!data) {
+                fprintf(stderr, "Warning: Failed to allocate memory for block %d\n", nblocks);
+                break;
+            }
+            
+            if (fread(data, 1, data_size, in_fp) != data_size) {
+                free(data);
+                fprintf(stderr, "Warning: Failed to read data in block %d\n", nblocks);
+                break;
+            }
+            
+            // Compute CRC to verify integrity
+            uint32_t computed_crc = crc32(0L, Z_NULL, 0);
+            computed_crc = crc32(computed_crc, data, data_size);
+            
+            if (stored_crc != computed_crc) {
+                integrity_errors++;
+            }
+            
+            // Try to estimate uncompressed size by reading the block metadata
+            // We need to parse name, length, sequence, and quality sections
+            unsigned char *ptr = data;
+            unsigned char *end = data + data_size;
+            
+            // Name section
+            if (ptr < end) {
+                ptr++; // skip name_strat
+                if (ptr + 8 <= end) {
+                    uint32_t name_usize = *(uint32_t*)ptr; ptr += 4;
+                    uint32_t name_csize = *(uint32_t*)ptr; ptr += 4;
+                    ptr += name_csize;
+                    total_uncompressed += name_usize;
+                }
+            }
+            
+            // Length section
+            if (ptr < end) {
+                ptr++; // skip len_strat
+                // Length encoding is variable, skip it for now
+                // Just estimate based on num_records * average length
+            }
+            
+            // Sequence section
+            if (ptr + 9 <= end) {
+                ptr++; // skip seq_strat
+                uint32_t seq_usize = *(uint32_t*)ptr; ptr += 4;
+                uint32_t seq_csize = *(uint32_t*)ptr; ptr += 4;
+                ptr += seq_csize;
+                total_uncompressed += seq_usize; // Sequence bases
+                
+                // Quality section should match sequence size
+                if (ptr + 9 <= end) {
+                    ptr++; // skip qual_strat
+                    ptr += 8; // skip qual_usize and qual_csize
+                    // Don't double count - quality is same size as sequence
+                }
+            }
+            
+            free(data);
+        } else {
+            // No CRC - skip the rest of the block
+            uint32_t data_size = block_size - 4;  // Subtract num_records (4)
+            fseek(in_fp, data_size, SEEK_CUR);
+        }
+        
+        nblocks++;
+    }
+    
+    // Try to read index if present
+    fqz5_index *idx = NULL;
+    if (index_offset > 0) {
+        idx = read_index(in_fp, index_offset);
+    }
+    
+    // Display block information
+    printf("Number of Blocks:    %d\n", nblocks);
+    if (total_records > 0) {
+        printf("Total Records:       %llu\n", (unsigned long long)total_records);
+    }
+    
+    // Display size information
+    if (total_uncompressed > 0) {
+        printf("Uncompressed Size:   %llu bytes (%.2f MB)\n", 
+               (unsigned long long)total_uncompressed, total_uncompressed / 1048576.0);
+        double ratio = (double)total_uncompressed / file_size;
+        printf("Compression Ratio:   %.2fx (%.2f%%)\n", ratio, (file_size * 100.0) / total_uncompressed);
+    }
+    
+    // Try to detect interleaving
+    // Heuristic: if we have an even number of records, it might be interleaved
+    // More sophisticated detection would require parsing read names
+    if (total_records > 0) {
+        if (total_records % 2 == 0) {
+            printf("Interleaved:         Possibly (even number of records)\n");
+        } else {
+            printf("Interleaved:         No (odd number of records)\n");
+        }
+    }
+    
+    // Display index information
+    if (idx) {
+        printf("Index Present:       Yes (%u blocks indexed)\n", idx->nblocks);
+        free_index(idx);
+    } else {
+        printf("Index Present:       No\n");
+    }
+    
+    // Display integrity status
+    printf("\nIntegrity Check:\n");
+    if (has_crc) {
+        if (integrity_errors == 0) {
+            printf("  Status:            OK (all %d blocks verified)\n", nblocks);
+        } else {
+            printf("  Status:            FAILED (%d/%d blocks have CRC errors)\n", 
+                   integrity_errors, nblocks);
+        }
+    } else {
+        printf("  Status:            Not Available (file has no CRC checksums)\n");
+        printf("  Note:              Upgrade to v1.1 format for integrity checking\n");
+    }
+    
+    return integrity_errors > 0 ? -1 : 0;
+}
+
 // Fast integrity check - verify CRC checksums without decompressing
 int check_integrity(FILE *in_fp, opts *arg) {
     uint64_t index_offset;
@@ -3898,9 +4101,11 @@ void usage(FILE *fp) {
     fprintf(fp, "Usage: fqzcomp5 [options] -d [input.fqz5  [output.fastq]]\n");
     fprintf(fp, "Usage: fqzcomp5 [options] -d [input.fqz5  [output_R1.fastq output_R2.fastq]]\n");
     fprintf(fp, "Usage: fqzcomp5 --check      [input.fqz5]\n");
+    fprintf(fp, "Usage: fqzcomp5 --inspect    [input.fqz5]\n");
     fprintf(fp, "\nOptions:\n");
     fprintf(fp, "    -d            Decompress\n");
     fprintf(fp, "    --check       Verify file integrity (CRC checksums) without decompressing\n");
+    fprintf(fp, "    --inspect     Display comprehensive file information (version, size, ratio, etc.)\n");
     fprintf(fp, "    -p            Output name on third line (+name instead of +)\n");
     fprintf(fp, "    -t INT        Number of threads.  Defaults to 4\n");
     fprintf(fp, "    -b SIZE       Specify block size. May use K, M and G sufixes\n");
@@ -3932,6 +4137,7 @@ void usage(FILE *fp) {
     fprintf(fp, "  FQZ5 v1.1 files include CRC32 checksums for data integrity.\n");
     fprintf(fp, "  Checksums are verified automatically during decompression.\n");
     fprintf(fp, "  Use --check to quickly verify file integrity without decompressing.\n");
+    fprintf(fp, "  Use --inspect to get comprehensive information about a compressed file.\n");
 }
 
 int main(int argc, char **argv) {
@@ -3959,6 +4165,7 @@ int main(int argc, char **argv) {
 	.nthread = 4,
 	.plus_name = 0,  // don't output name on third line by default
 	.check_only = 0,  // don't do check-only mode by default
+	.inspect_only = 0,  // don't do inspect-only mode by default
 	.verify_crc = 1,  // verify CRC by default when available
     };
 
@@ -3967,11 +4174,19 @@ int main(int argc, char **argv) {
         _setmode(_fileno(stdout), _O_BINARY);
 #endif
 
-    // Check for --check flag before getopt processing
+    // Check for --check and --inspect flags before getopt processing
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--check") == 0) {
             arg.check_only = 1;
             // Remove --check from argv so it doesn't interfere with getopt
+            for (int j = i; j < argc - 1; j++) {
+                argv[j] = argv[j + 1];
+            }
+            argc--;
+            break;
+        } else if (strcmp(argv[i], "--inspect") == 0) {
+            arg.inspect_only = 1;
+            // Remove --inspect from argv so it doesn't interfere with getopt
             for (int j = i; j < argc - 1; j++) {
                 argv[j] = argv[j + 1];
             }
@@ -4167,6 +4382,26 @@ int main(int argc, char **argv) {
         }
         
         int result = check_integrity(in_fp, &arg);
+        fclose(in_fp);
+        return result == 0 ? 0 : 1;
+    }
+
+    // Handle --inspect mode
+    if (arg.inspect_only) {
+        if (argc - optind != 1) {
+            fprintf(stderr, "Error: --inspect requires exactly one input file\n");
+            usage(stderr);
+            return 1;
+        }
+        
+        const char *in_name = argv[optind];
+        FILE *in_fp = fopen(in_name, "rb");
+        if (!in_fp) {
+            perror(in_name);
+            return 1;
+        }
+        
+        int result = inspect_file(in_fp, &arg);
         fclose(in_fp);
         return result == 0 ? 0 : 1;
     }
