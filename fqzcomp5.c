@@ -412,6 +412,7 @@ fastq *load_seqs(char *in, int blk_size, int *last_offset) {
 
     return NULL;
 }
+#undef goto
 
 // Load sequences using kseq.h (supports gzipped files)
 fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
