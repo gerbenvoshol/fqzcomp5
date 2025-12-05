@@ -79,10 +79,10 @@ static: fqzcomp5-static
 fqzcomp5-static: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
 	$(CC) $(LDFLAGS) $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ) -o $@ $(LIBS)
 
-# Debug static build (debug symbols + statically linked)
+# Debug static build (debug symbols + statically linked, no linker optimizations)
 # Note: Run 'make clean' first when switching between build types
 debug-static: CFLAGS = $(DEBUG_CFLAGS)
-debug-static: LDFLAGS = $(DEBUG_LDFLAGS) $(STATIC_LDFLAGS)
+debug-static: LDFLAGS = $(DEBUG_LDFLAGS) $(STATIC_LDFLAGS)  # No -Wl,-O1 for easier debugging
 debug-static: fqzcomp5-debug-static
 
 fqzcomp5-debug-static: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
