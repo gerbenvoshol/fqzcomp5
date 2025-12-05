@@ -1402,8 +1402,23 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 
     } else {
 	char *n1 = malloc(name_len);
+	if (!n1) {
+	    free(nout);
+	    return NULL;
+	}
 	char *n2 = malloc(name_len);
+	if (!n2) {
+	    free(n1);
+	    free(nout);
+	    return NULL;
+	}
 	unsigned char *flag = malloc(name_len/2);  //Worst case\n 
+	if (!flag) {
+	    free(n1);
+	    free(n2);
+	    free(nout);
+	    return NULL;
+	}
 	char *cp1 = n1, *cp2 = n2;
 	int i = 0, nr = 0;
 	// Flag bit 0: has "/NUM"
@@ -1484,13 +1499,46 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 	unsigned int clenf, clen2 = 0;
 	unsigned char *out = tok3_encode_names(n1, cp1-n1, level, 0, &clen1,
 					       NULL);
+	if (!out) {
+	    free(n1);
+	    free(n2);
+	    free(flag);
+	    free(nout);
+	    return NULL;
+	}
 	unsigned char *outf = rans_compress_4x16(flag, nr, &clenf, 129);
+	if (!outf) {
+	    free(out);
+	    free(n1);
+	    free(n2);
+	    free(flag);
+	    free(nout);
+	    return NULL;
+	}
 	unsigned char *out2 = NULL;
 	if (cp2 != n2) {
 	    unsigned char *lzp_out = malloc((cp2-n2)*2);
+	    if (!lzp_out) {
+		free(out);
+		free(outf);
+		free(n1);
+		free(n2);
+		free(flag);
+		free(nout);
+		return NULL;
+	    }
 	    clen2 = lzp((unsigned char *)n2, cp2-n2, lzp_out);
 	    out2 = rans_compress_4x16(lzp_out, clen2, &clen2, 5);
 	    free(lzp_out);
+	    if (!out2) {
+		free(out);
+		free(outf);
+		free(n1);
+		free(n2);
+		free(flag);
+		free(nout);
+		return NULL;
+	    }
 	}
 
 	unsigned int clen = clen1 + clenf + clen2 + 8;
