@@ -1610,6 +1610,14 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	unsigned char *cpf = outf, *cpf_end = outf+u_lenf;
 	unsigned char *cp2 = out2, *cp2_end = out2 + u_len2;
 	out = malloc(u_len);
+	if (!out) {
+	    free(out1);
+	    free(outf);
+	    free(out2);
+	    if (decoded_flags)
+		free(decoded_flags);
+	    goto err;
+	}
 	unsigned char *cp  = out,  *cp_end = out + u_len;
 	unsigned char *last_cp = NULL;
 	int record_idx = 0;
