@@ -1377,7 +1377,7 @@ char *decode_seq(unsigned char *in,  unsigned int in_size,
 
 static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 			  int strat, int level, unsigned int *out_size,
-			  unsigned int *fq_flags, int num_records) {
+			  unsigned int *fq_flags, int num_records, int is_paired) {
     // TODO: work out a better maximum bound
     char *nout = malloc(name_len*2+1000), *cp = nout;
     if (!nout)
@@ -1472,16 +1472,29 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 
 	    // Use fq_flags array if provided to set /1 or /2 flag
 	    // This is crucial for paired-end reads that don't have explicit /1 /2 in names
-	    // Only apply this logic if fq_flags indicates this is actually an R2 read
-	    // (paired-end R2 reads need to be marked with /2 flag)
-	    if (fq_flags && nr < num_records && (fq_flags[nr] & FQZ_FREAD2)) {
-		// This is an R2 read in paired-end data, mark as /2
-		if (!(f & 1)) {
-		    // Doesn't already have /1 or /2, so add /2
-		    f |= 3;  // bit 0 (has /NUM) + bit 1 (/2)
-		} else if (!(f & 2)) {
-		    // Has /1, change to /2
-		    f |= 2;  // set bit 1 to make it /2
+	    // For paired-end mode (is_paired=1):
+	    //   - R1 reads (fq_flags[nr] == 0) should get /1 flag
+	    //   - R2 reads (fq_flags[nr] & FQZ_FREAD2) should get /2 flag
+	    // For single-end mode (is_paired=0):
+	    //   - Don't add /1 or /2 flags
+	    if (fq_flags && nr < num_records && is_paired) {
+		if (fq_flags[nr] & FQZ_FREAD2) {
+		    // This is an R2 read in paired-end data, mark as /2
+		    if (!(f & 1)) {
+			// Doesn't already have /1 or /2, so add /2
+			f |= 3;  // bit 0 (has /NUM) + bit 1 (/2)
+		    } else if (!(f & 2)) {
+			// Has /1, change to /2
+			f |= 2;  // set bit 1 to make it /2
+		    }
+		} else {
+		    // This is an R1 read in paired-end data, mark as /1
+		    if (!(f & 1)) {
+			// Doesn't already have /1 or /2, so add /1
+			f |= 1;  // bit 0 (has /NUM), bit 1 clear (/1)
+		    }
+		    // If it already has /1, leave it as is
+		    // If it has /2, this is unexpected but leave it
 		}
 	    }
 
@@ -1766,6 +1779,7 @@ typedef struct {
     int check_only;              // only verify integrity, don't decompress
     int inspect_only;            // inspect file and show metadata
     int verify_crc;              // verify CRC during decompression (enabled by default for v1.1)
+    int paired_mode;             // 1 if processing paired-end reads (interleaved), 0 otherwise
 } opts;
 
 typedef struct {
@@ -1978,7 +1992,7 @@ char *compress_with_methods(fqz_gparams *gp,  opts *arg, fastq *fq,
 
 	case TLZP3:
 	    out = encode_names(in, in_size, 0 /* LZP + rANS o5 */,
-			       (m-TOK3_3)*2+3, out_size, fq->flag, fq->num_records);
+			       (m-TOK3_3)*2+3, out_size, fq->flag, fq->num_records, arg->paired_mode);
 	    out_len = *out_size;
 	    break;
 
@@ -1987,7 +2001,7 @@ char *compress_with_methods(fqz_gparams *gp,  opts *arg, fastq *fq,
 	case TOK3_7:
 	case TOK3_9:
 	    out = encode_names(in, in_size, 1 /* TOK3 */,
-			       (m-TOK3_3)*2+3, out_size, fq->flag, fq->num_records);
+			       (m-TOK3_3)*2+3, out_size, fq->flag, fq->num_records, arg->paired_mode);
 	    out_len = *out_size;
 	    break;
 
@@ -1996,7 +2010,7 @@ char *compress_with_methods(fqz_gparams *gp,  opts *arg, fastq *fq,
 	case TOK3_7_LZP:
 	case TOK3_9_LZP:
 	    out = encode_names(in, in_size, 2 /* TOK3+LZP */,
-			       (m-TOK3_3_LZP)*2+3, out_size, fq->flag, fq->num_records);
+			       (m-TOK3_3_LZP)*2+3, out_size, fq->flag, fq->num_records, arg->paired_mode);
 	    out_len = *out_size;
 	    break;
 
@@ -2133,7 +2147,7 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
 				&clen, &strat, &t->nmeth);
 #else
     out = encode_names((uint8_t *)fq->name_buf, fq->name_len, arg->nstrat,
-		       arg->nlevel, &clen, fq->flag, fq->num_records);
+		       arg->nlevel, &clen, fq->flag, fq->num_records, arg->paired_mode);
 #endif
     APPEND_OUT(out, clen);
     free(out);
@@ -4606,6 +4620,7 @@ int main(int argc, char **argv) {
 	.check_only = 0,  // don't do check-only mode by default
 	.inspect_only = 0,  // don't do inspect-only mode by default
 	.verify_crc = 1,  // verify CRC by default when available
+	.paired_mode = 0,  // will be set to 1 if processing paired-end files
     };
 
 #ifdef _WIN32
@@ -4874,6 +4889,7 @@ int main(int argc, char **argv) {
             out_name1 = argv[optind+1];
             out_name2 = argv[optind+2];
             paired_mode = 1;
+            arg.paired_mode = 1;  // Set in opts for encode_names
         } else {
             fprintf(stderr, "Error: Too many arguments\n");
             usage(stderr);
@@ -4899,6 +4915,7 @@ int main(int argc, char **argv) {
             in_name2 = argv[optind+1];
             out_name1 = argv[optind+2];
             paired_mode = 1;
+            arg.paired_mode = 1;  // Set in opts for encode_names
         } else {
             fprintf(stderr, "Error: Too many arguments\n");
             usage(stderr);
