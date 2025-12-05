@@ -1525,7 +1525,13 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
     if (strat == 0) {
 	unsigned int ru_len;
 	unsigned char *rout = rans_uncompress_4x16(comp, c_len, &ru_len);
+	if (!rout)
+	    goto err;
 	out = malloc(u_len);
+	if (!out) {
+	    free(rout);
+	    goto err;
+	}
 	u_len = unlzp(rout, ru_len, out);
 	free(rout);
 	// No flag array for strat 0
@@ -1535,6 +1541,8 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    *out_num_records = 0;
     } else if (strat == 1) {
 	out = tok3_decode_names(comp, c_len, &u_len);
+	if (!out)
+	    goto err;
 	// No flag array for strat 1
 	if (out_flags)
 	    *out_flags = NULL;
