@@ -2271,6 +2271,10 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
     if ((c & 7) == 1) {
 	out = (uint8_t *)decode_seq(comp, c_len, fq->len, fq->num_records,
 				    both_strands, slevel, u_len);
+	if (!out) {
+	    fprintf(stderr, "ERROR: Failed to decode sequence data (FQZ)\n");
+	    goto err;
+	}
     } else if (c == LZP3) {
 	unsigned int ru_len;
 	unsigned char *rout = rans_uncompress_4x16(comp, c_len, &ru_len);
@@ -2288,15 +2292,15 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
 	free(rout);
     } else if (c == 0) {
 	out = rans_uncompress_4x16(comp, c_len, &u_len);
+	if (!out) {
+	    fprintf(stderr, "ERROR: Failed to decompress sequence data (rANS)\n");
+	    goto err;
+	}
     } else {
 	fprintf(stderr, "Unrecognised sequence strategy %d\n", c);
 	goto err;
     }
 
-    if (!out) {
-	fprintf(stderr, "ERROR: Failed to decode sequence data\n");
-	goto err;
-    }
     fq->seq_buf = (char *)out;
     fq->seq_len = u_len;
     for (i = 0; i < nr; i++)
