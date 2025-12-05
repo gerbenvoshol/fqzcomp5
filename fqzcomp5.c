@@ -1422,7 +1422,7 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 	    free(nout);
 	    return NULL;
 	}
-	unsigned char *flag = malloc(name_len/2);  //Worst case\n 
+	unsigned char *flag = malloc(name_len/2);  // Worst case
 	if (!flag) {
 	    free(n1);
 	    free(n2);
