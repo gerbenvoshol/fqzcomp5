@@ -291,7 +291,7 @@ fastq *load_seqs(char *in, int blk_size, int *last_offset) {
     int last_start = 0;
     while (i < blk_size) {
 	if (nr >= ar) {
-	    ar = ar*1.5 + 10000;
+	    ar = ar ? (ar << 1) : 10000;  // 2x growth, more cache-friendly
 	    fq->name = realloc(fq->name, ar*sizeof(char *));
 	    fq->seq  = realloc(fq->seq , ar*sizeof(char *));
 	    fq->qual = realloc(fq->qual, ar*sizeof(char *));
@@ -308,7 +308,7 @@ fastq *load_seqs(char *in, int blk_size, int *last_offset) {
 	int name_i_ = name_i; // tmp copy so we can unwind a partial decode
 	while (i < blk_size && (c = in[i++]) && c != '\n') {
 	    if (name_i_+1 >= name_sz) {
-		name_sz = name_sz * 1.5 + 1000;
+		name_sz = name_sz ? (name_sz << 1) : 1000;  // 2x growth
 		name_buf = fq->name_buf = realloc(fq->name_buf, name_sz);
 	    }
 	    name_buf[name_i_++] = c;
@@ -337,7 +337,7 @@ fastq *load_seqs(char *in, int blk_size, int *last_offset) {
 	    if (seq_i_ >= seq_sz) {
 		// very unlikely given blk_size/2 starting point,
 		// but not impossible.
-		seq_sz = seq_sz * 1.5 + 1000;
+		seq_sz = seq_sz ? (seq_sz << 1) : 1000;  // 2x growth
 		seq_buf = fq->seq_buf = realloc(fq->seq_buf, seq_sz);
 	    }
 	    seq_buf[seq_i_++] = c;
@@ -368,7 +368,7 @@ fastq *load_seqs(char *in, int blk_size, int *last_offset) {
 	while (i < blk_size && (c = in[i++]) && c != '\n') {
 	    if (qual_i_ >= qual_sz) {
 		// very unlikely given blk_size/2 starting point
-		qual_sz = qual_sz * 1.5 + 1000;
+		qual_sz = qual_sz ? (qual_sz << 1) : 1000;  // 2x growth
 		qual_buf = fq->qual_buf = realloc(fq->qual_buf, qual_sz);
 	    }
 	    qual_buf[qual_i_++] = c-33;
@@ -447,7 +447,7 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         total_size += record_size;
         
         if (nr >= ar) {
-            ar = ar*1.5 + 10000;
+            ar = ar ? (ar << 1) : 10000;  // 2x growth, more cache-friendly
             fq->name = realloc(fq->name, ar*sizeof(char *));
             fq->seq  = realloc(fq->seq , ar*sizeof(char *));
             fq->qual = realloc(fq->qual, ar*sizeof(char *));
@@ -463,7 +463,12 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         }
         
         if (name_i + total_name_len + 1 >= name_sz) {
-            name_sz = name_sz * 1.5 + total_name_len + 1000;
+            // Calculate exact required size, ensuring at least 2x growth
+            size_t required = name_i + total_name_len + 1;
+            size_t new_sz = name_sz ? (name_sz << 1) : 1000;
+            if (new_sz < required)
+                new_sz = required;
+            name_sz = new_sz;
             name_buf = fq->name_buf = realloc(fq->name_buf, name_sz);
         }
         memcpy(name_buf + name_i, seq->name.s, seq->name.l);
@@ -492,7 +497,12 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         // Store sequence
         fq->seq[nr] = seq_i;
         if (seq_i + seq->seq.l >= seq_sz) {
-            seq_sz = seq_sz * 1.5 + seq->seq.l + 1000;
+            // Calculate exact required size, ensuring at least 2x growth
+            size_t required = seq_i + seq->seq.l;
+            size_t new_sz = seq_sz ? (seq_sz << 1) : 1000;
+            if (new_sz < required)
+                new_sz = required;
+            seq_sz = new_sz;
             seq_buf = fq->seq_buf = realloc(fq->seq_buf, seq_sz);
         }
         memcpy(seq_buf + seq_i, seq->seq.s, seq->seq.l);
@@ -508,7 +518,12 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         // Store quality
         fq->qual[nr] = qual_i;
         if (qual_i + seq->qual.l >= qual_sz) {
-            qual_sz = qual_sz * 1.5 + seq->qual.l + 1000;
+            // Calculate exact required size, ensuring at least 2x growth
+            size_t required = qual_i + seq->qual.l;
+            size_t new_sz = qual_sz ? (qual_sz << 1) : 1000;
+            if (new_sz < required)
+                new_sz = required;
+            qual_sz = new_sz;
             qual_buf = fq->qual_buf = realloc(fq->qual_buf, qual_sz);
         }
         for (int i = 0; i < seq->qual.l; i++)
@@ -1402,7 +1417,7 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	uint32_t clen2 = c_len - clen1 - clenf - 8;
 
 	// Uncompress 3 separate components
-	unsigned int u_len1, u_lenf, u_len2;
+	unsigned int u_len1, u_lenf, u_len2 = 0;
 	unsigned char *out1 = tok3_decode_names(comp+8, clen1, &u_len1);
 	unsigned char *outf = rans_uncompress_4x16(comp+8+clen1, clenf,
 						   &u_lenf);
@@ -1503,7 +1518,7 @@ static inline uint64_t tvdiff(struct timeval *tv1, struct timeval *tv2) {
 	+ tv2->tv_usec - tv1->tv_usec;
 }
 
-void update_stats(timings *t,
+static inline void update_stats(timings *t,
 		  int column, // 0=name 1=seq 2=qual 3=length
 		  int64_t usize, int csize, int time) {
     switch (column) {
@@ -1836,6 +1851,10 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
     comp_sz += 4;  // Reserve 4 bytes for block size
     
     APPEND_OUT(&fq->num_records, 4);
+    
+    // Reserve space for CRC32 (will be filled at the end)
+    uint32_t crc_offset = comp_sz;
+    comp_sz += 4;  // Reserve 4 bytes for CRC
 
     //----------
     // Names: tok3
@@ -1928,19 +1947,13 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
     gettimeofday(&tv2, NULL);
     update_stats(t, 2, fq->qual_len, clen+9, tvdiff(&tv1, &tv2));
 
-    // Reallocate to make space for CRC right after num_records
-    comp = realloc(comp, comp_sz + 4);
-    // Move data to make room for CRC after num_records (at position 8)
-    memmove(comp + 12, comp + 8, comp_sz - 8);  // shift data after num_records
-    comp_sz += 4;
-    
-    // Compute CRC32 for the block data (from position 12 onwards, after we've inserted the space)
+    // Compute CRC32 for the block data (from position 12 onwards)
     // CRC is computed on all data after the CRC field itself
     uint32_t block_crc = crc32(0L, Z_NULL, 0);
     block_crc = crc32(block_crc, (unsigned char *)(comp + 12), comp_sz - 12);
     
-    // Insert CRC at position 8 (after block_size and num_records)
-    *(uint32_t *)(comp + 8) = block_crc;
+    // Insert CRC at the reserved position (position 8, after block_size and num_records)
+    *(uint32_t *)(comp + crc_offset) = block_crc;
     
     // Update block size to include CRC and all the data
     *(uint32_t *)(comp + block_size_offset) = comp_sz - 4;
