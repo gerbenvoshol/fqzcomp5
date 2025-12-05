@@ -1697,11 +1697,9 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	}
 	size_t suffix_space = (size_t)u_lenf * 2;
 	size_t out_size = (size_t)u_len + suffix_space;
-	// Sanity check: the output should be reasonable in size
-	// In practice, names with suffixes shouldn't exceed twice the original size
-	// Check for overflow: out_size < u_len means wraparound occurred
-	// Also check: suffix_space > u_len means more than double the size which is unreasonable
-	if (out_size < u_len || suffix_space > u_len) {
+	// Sanity check: detect wraparound overflow
+	// out_size < u_len means addition wrapped around
+	if (out_size < u_len) {
 	    fprintf(stderr, "ERROR: Output size overflow in decode_names (u_len=%u, u_lenf=%u)\n",
 		    u_len, u_lenf);
 	    free(out1);
