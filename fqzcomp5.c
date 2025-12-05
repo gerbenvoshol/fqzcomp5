@@ -1515,7 +1515,7 @@ static inline uint64_t tvdiff(struct timeval *tv1, struct timeval *tv2) {
 	+ tv2->tv_usec - tv1->tv_usec;
 }
 
-void update_stats(timings *t,
+static inline void update_stats(timings *t,
 		  int column, // 0=name 1=seq 2=qual 3=length
 		  int64_t usize, int csize, int time) {
     switch (column) {
