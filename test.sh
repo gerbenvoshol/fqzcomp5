@@ -81,6 +81,47 @@ verify_read_order() {
     fi
 }
 
+# Function to verify deinterleaving alternation pattern
+verify_deinterleaving() {
+    local r1_file="$1"
+    local r2_file="$2"
+    local out_r1="$3"
+    local out_r2="$4"
+    local test_name="$5"
+    
+    # Extract read names from original files
+    grep "^@" "$r1_file" > "$TEST_DIR/orig_r1_names.txt"
+    grep "^@" "$r2_file" > "$TEST_DIR/orig_r2_names.txt"
+    
+    # Extract read names from decompressed files
+    grep "^@" "$out_r1" > "$TEST_DIR/out_r1_names.txt"
+    grep "^@" "$out_r2" > "$TEST_DIR/out_r2_names.txt"
+    
+    # Count lines
+    local r1_count=$(wc -l < "$TEST_DIR/orig_r1_names.txt")
+    local r2_count=$(wc -l < "$TEST_DIR/orig_r2_names.txt")
+    local out_r1_count=$(wc -l < "$TEST_DIR/out_r1_names.txt")
+    local out_r2_count=$(wc -l < "$TEST_DIR/out_r2_names.txt")
+    
+    # Check that counts match
+    if [ "$r1_count" -ne "$out_r1_count" ] || [ "$r2_count" -ne "$out_r2_count" ]; then
+        print_result "$test_name" "FAIL"
+        echo "  Read counts don't match: R1 $r1_count->$out_r1_count, R2 $r2_count->$out_r2_count"
+        return 1
+    fi
+    
+    # Check that each R1 read went to output R1 and each R2 read went to output R2
+    if diff -q "$TEST_DIR/orig_r1_names.txt" "$TEST_DIR/out_r1_names.txt" > /dev/null 2>&1 && \
+       diff -q "$TEST_DIR/orig_r2_names.txt" "$TEST_DIR/out_r2_names.txt" > /dev/null 2>&1; then
+        print_result "$test_name" "PASS"
+        return 0
+    else
+        print_result "$test_name" "FAIL"
+        echo "  Deinterleaving pattern incorrect - reads not properly alternated"
+        return 1
+    fi
+}
+
 echo "======================================"
 echo "FQZComp5 Automated Test Suite"
 echo "======================================"
@@ -124,6 +165,9 @@ verify_identical test_data/sample_R1.fastq "$TEST_DIR/paired_R1.fastq" "Paired-e
 verify_identical test_data/sample_R2.fastq "$TEST_DIR/paired_R2.fastq" "Paired-end R2 roundtrip"
 verify_read_order test_data/sample_R1.fastq "$TEST_DIR/paired_R1.fastq" "Paired-end R1 read order preservation"
 verify_read_order test_data/sample_R2.fastq "$TEST_DIR/paired_R2.fastq" "Paired-end R2 read order preservation"
+
+# Test 7a: Verify deinterleaving alternation pattern
+verify_deinterleaving test_data/sample_R1.fastq test_data/sample_R2.fastq "$TEST_DIR/paired_R1.fastq" "$TEST_DIR/paired_R2.fastq" "Paired-end deinterleaving alternation (even→R1, odd→R2)"
 
 # Test 8-12: Paired-end with different compression levels
 for level in 1 3 5 7 9; do

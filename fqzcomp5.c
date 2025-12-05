@@ -3268,8 +3268,10 @@ int output_fastq_deinterleaved(FILE *out_fp1, FILE *out_fp2, fastq *fq, int plus
     char *cp2 = buf2;
 
     for (int i = 0; i < fq->num_records; i++) {
-        // Determine which buffer to use
-        char **cpp = (fq->flag[i] & FQZ_FREAD2) ? &cp2 : &cp1;
+        // Determine which buffer to use based on position
+        // Even indices (0, 2, 4, ...) go to file 1 (R1)
+        // Odd indices (1, 3, 5, ...) go to file 2 (R2)
+        char **cpp = (i % 2 == 1) ? &cp2 : &cp1;
         char *cp = *cpp;
         
         char *name_start = np;  // save start of name for third line
@@ -3332,8 +3334,10 @@ int output_fastq_gzip_deinterleaved(gzFile out_fp1, gzFile out_fp2, fastq *fq, i
     char *cp2 = buf2;
 
     for (int i = 0; i < fq->num_records; i++) {
-        // Determine which buffer to use
-        char **cpp = (fq->flag[i] & FQZ_FREAD2) ? &cp2 : &cp1;
+        // Determine which buffer to use based on position
+        // Even indices (0, 2, 4, ...) go to file 1 (R1)
+        // Odd indices (1, 3, 5, ...) go to file 2 (R2)
+        char **cpp = (i % 2 == 1) ? &cp2 : &cp1;
         char *cp = *cpp;
         
         char *name_start = np;  // save start of name for third line
