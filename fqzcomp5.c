@@ -1543,19 +1543,44 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
     } else {
 	uint32_t clen1 = *(uint32_t *)comp;
 	uint32_t clenf = *(uint32_t *)(comp+4);
+	
+	// Sanity check: ensure lengths are valid
+	if (c_len < clen1 + clenf + 8) {
+	    fprintf(stderr, "ERROR: Invalid compressed name data (c_len=%u, clen1=%u, clenf=%u)\n",
+		    c_len, clen1, clenf);
+	    goto err;
+	}
+	
 	uint32_t clen2 = c_len - clen1 - clenf - 8;
 
 	// Uncompress 3 separate components
 	unsigned int u_len1, u_lenf, u_len2 = 0;
 	unsigned char *out1 = tok3_decode_names(comp+8, clen1, &u_len1);
+	if (!out1)
+	    goto err;
 	unsigned char *outf = rans_uncompress_4x16(comp+8+clen1, clenf,
 						   &u_lenf);
+	if (!outf) {
+	    free(out1);
+	    goto err;
+	}
 	unsigned char *out2 = NULL;
 	if (clen2) {
 	    unsigned int rulen;
 	    unsigned char *rout = rans_uncompress_4x16(comp+8+clen1+clenf,
 						       clen2, &rulen);
+	    if (!rout) {
+		free(out1);
+		free(outf);
+		goto err;
+	    }
 	    out2 = malloc(u_len);
+	    if (!out2) {
+		free(out1);
+		free(outf);
+		free(rout);
+		goto err;
+	    }
 	    u_len2 = unlzp(rout, rulen, out2);
 	    free(rout);
 	}
