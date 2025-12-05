@@ -1682,7 +1682,34 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	unsigned char *cp1 = out1, *cp1_end = out1+u_len1;
 	unsigned char *cpf = outf, *cpf_end = outf+u_lenf;
 	unsigned char *cp2 = out2, *cp2_end = out2 + u_len2;
-	out = malloc(u_len);
+	
+	// Allocate output buffer with extra space for potential /1 or /2 suffixes
+	// Each record could add "/1" or "/2" (2 bytes), so add 2*u_lenf extra bytes
+	// Check for potential overflow before calculations
+	if (u_lenf > SIZE_MAX / 2) {
+	    fprintf(stderr, "ERROR: Too many records for suffix calculation (u_lenf=%u)\n", u_lenf);
+	    free(out1);
+	    free(outf);
+	    free(out2);
+	    if (decoded_flags)
+		free(decoded_flags);
+	    goto err;
+	}
+	size_t suffix_space = (size_t)u_lenf * 2;
+	size_t out_size = (size_t)u_len + suffix_space;
+	// Sanity check: detect wraparound overflow
+	// out_size < u_len means addition wrapped around
+	if (out_size < u_len) {
+	    fprintf(stderr, "ERROR: Output size overflow in decode_names (u_len=%u, u_lenf=%u)\n",
+		    u_len, u_lenf);
+	    free(out1);
+	    free(outf);
+	    free(out2);
+	    if (decoded_flags)
+		free(decoded_flags);
+	    goto err;
+	}
+	out = malloc(out_size);
 	if (!out) {
 	    free(out1);
 	    free(outf);
@@ -1691,7 +1718,7 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 		free(decoded_flags);
 	    goto err;
 	}
-	unsigned char *cp  = out,  *cp_end = out + u_len;
+	unsigned char *cp  = out,  *cp_end = out + out_size;  // Use out_size not u_len
 	unsigned char *last_cp = NULL;
 	int record_idx = 0;
 	while (cp < cp_end) {
@@ -1702,12 +1729,13 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    int flag = 0;
 	    if (cpf < cpf_end)
 		flag = *cpf++;
-	    if ((flag & 1) && cp+1 < cp_end) {
+	    // Need space for 2 bytes: '/' and '1'/'2'
+	    if ((flag & 1) && cp + 1 < cp_end) {
 		*cp++ = '/';
 		*cp++ = (flag & 2) ? '2' : '1';
 	    }
 		
-	    if (flag & 4)
+	    if (flag & 4 && cp < cp_end)
 		*cp++ = (flag & 8) ? '\t' : ' ';
 
 	    if (cp2) {
