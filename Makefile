@@ -7,6 +7,14 @@ CFLAGS = -O3 -Wall -march=native -mtune=native -ffast-math -funroll-loops -fomit
 LDFLAGS = -Wl,-O1 -Wl,--as-needed
 LIBS = -lz -lm -lbz2 -pthread
 
+# Debug build flags
+DEBUG_CFLAGS = -g -O0 -Wall
+DEBUG_LDFLAGS =  # Empty: debug builds use no special linker flags
+
+# Static build flags  
+STATIC_LDFLAGS = -static
+STATIC_BUILD_LDFLAGS = -Wl,-O1 -Wl,--as-needed $(STATIC_LDFLAGS)
+
 # Main fqzcomp5 objects
 FQZCOMP5_OBJ = fqzcomp5.o lzp16e.o thread_pool.o
 
@@ -54,7 +62,33 @@ htscodecs/rANS_static32x16pr_avx2.o: htscodecs/rANS_static32x16pr_avx2.c
 htscodecs/rANS_static32x16pr_avx512.o: htscodecs/rANS_static32x16pr_avx512.c
 	$(CC) $(CFLAGS) $(INCLUDES) -mavx512f -c $< -o $@
 
-clean:
-	-rm -f fqzcomp5 $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
+# Debug build (with debug symbols and no optimization)
+# Note: Run 'make clean' first when switching between build types
+debug: CFLAGS = $(DEBUG_CFLAGS)
+debug: LDFLAGS = $(DEBUG_LDFLAGS)
+debug: fqzcomp5-debug
 
-.PHONY: all clean
+fqzcomp5-debug: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
+	$(CC) $(LDFLAGS) $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ) -o $@ $(LIBS)
+
+# Static build (statically linked executable)
+# Note: Run 'make clean' first when switching between build types
+static: LDFLAGS = $(STATIC_BUILD_LDFLAGS)
+static: fqzcomp5-static
+
+fqzcomp5-static: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
+	$(CC) $(LDFLAGS) $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ) -o $@ $(LIBS)
+
+# Debug static build (debug symbols + statically linked, no linker optimizations)
+# Note: Run 'make clean' first when switching between build types
+debug-static: CFLAGS = $(DEBUG_CFLAGS)
+debug-static: LDFLAGS = $(DEBUG_LDFLAGS) $(STATIC_LDFLAGS)  # No -Wl,-O1 for easier debugging
+debug-static: fqzcomp5-debug-static
+
+fqzcomp5-debug-static: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
+	$(CC) $(LDFLAGS) $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ) -o $@ $(LIBS)
+
+clean:
+	-rm -f fqzcomp5 fqzcomp5-debug fqzcomp5-static fqzcomp5-debug-static $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
+
+.PHONY: all clean debug static debug-static

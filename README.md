@@ -169,6 +169,25 @@ cat input.fastq | ./fqzcomp5 > output.fqz5
 zcat input.fastq.gz | ./fqzcomp5 | ./fqzcomp5 -d > output.fastq
 ```
 
+**Using process substitution with gzip/pigz:**
+```bash
+# Decompress paired-end to gzipped files using process substitution
+./fqzcomp5 -d input.fqz5 \
+    >(gzip -c > read1.fastq.gz) \
+    >(gzip -c > read2.fastq.gz)
+
+# Use pigz for faster parallel compression
+./fqzcomp5 -d input.fqz5 \
+    >(pigz -c > read1.fastq.gz) \
+    >(pigz -c > read2.fastq.gz)
+
+# Compress from gzipped paired-end files
+./fqzcomp5 \
+    <(zcat read1.fastq.gz) \
+    <(zcat read2.fastq.gz) \
+    output.fqz5
+```
+
 Compression Levels
 ------------------
 
