@@ -415,6 +415,21 @@ fastq *load_seqs(char *in, int blk_size, int *last_offset) {
 
 // Load sequences using kseq.h (supports gzipped files)
 fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
+    // Static variables to maintain state across calls for the same file
+    static kseq_t *seq = NULL;
+    static gzFile last_fp = NULL;
+    static int have_buffered = 0;
+    
+    // Reinitialize if file handle changed or first call
+    if (seq == NULL || fp != last_fp) {
+        if (seq != NULL) {
+            kseq_destroy(seq);
+        }
+        seq = kseq_init(fp);
+        last_fp = fp;
+        have_buffered = 0;
+    }
+    
     fastq *fq = calloc(1, sizeof(*fq));
     if (!fq)
         goto err;
@@ -435,14 +450,24 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
     int name_i = 0, seq_i = 0, qual_i = 0;
     int total_size = 0;
     
-    kseq_t *seq = kseq_init(fp);
-    int l;
+    int l = 0;
+    
+    // Process buffered record from previous block if we have one
+    if (have_buffered) {
+        have_buffered = 0;
+        l = 0;  // Signal we have a valid record
+        goto process_record;
+    }
     
     while ((l = kseq_read(seq)) >= 0) {
+    process_record:
         // Check if we would exceed block size
         int record_size = seq->name.l + 1 + seq->seq.l + seq->qual.l;
-        if (total_size > 0 && total_size + record_size > blk_size)
+        if (total_size > 0 && total_size + record_size > blk_size) {
+            // Block is full - buffer this record for next block
+            have_buffered = 1;
             break;
+        }
         
         total_size += record_size;
         
@@ -538,12 +563,19 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
         nr++;
     }
     
-    kseq_destroy(seq);
-    
+    // Check EOF status
     if (l == -1) {
         *eof_flag = 1;  // Normal EOF
+        // Clean up static kseq on EOF
+        kseq_destroy(seq);
+        seq = NULL;
+        have_buffered = 0;
     } else if (l < -1) {
         fprintf(stderr, "Error reading FASTQ file (code %d)\n", l);
+        // Clean up on error
+        kseq_destroy(seq);
+        seq = NULL;
+        have_buffered = 0;
         goto err;
     }
     
@@ -569,6 +601,28 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
 // Load interleaved sequences from two paired FASTQ files
 // Reads alternately from fp1 and fp2 to create an interleaved stream
 fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag) {
+    // Static variables to maintain state across calls for the same files
+    static kseq_t *seq1 = NULL;
+    static kseq_t *seq2 = NULL;
+    static gzFile last_fp1 = NULL;
+    static gzFile last_fp2 = NULL;
+    static int have_buffered = 0;
+    
+    // Reinitialize if file handles changed or first call
+    if (seq1 == NULL || seq2 == NULL || fp1 != last_fp1 || fp2 != last_fp2) {
+        if (seq1 != NULL) {
+            kseq_destroy(seq1);
+        }
+        if (seq2 != NULL) {
+            kseq_destroy(seq2);
+        }
+        seq1 = kseq_init(fp1);
+        seq2 = kseq_init(fp2);
+        last_fp1 = fp1;
+        last_fp2 = fp2;
+        have_buffered = 0;
+    }
+    
     fastq *fq = calloc(1, sizeof(*fq));
     if (!fq)
         goto err;
@@ -589,9 +643,15 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
     int name_i = 0, seq_i = 0, qual_i = 0;
     int total_size = 0;
     
-    kseq_t *seq1 = kseq_init(fp1);
-    kseq_t *seq2 = kseq_init(fp2);
     int l1 = 0, l2 = 0;
+    
+    // Process buffered record pair from previous block if we have one
+    if (have_buffered) {
+        have_buffered = 0;
+        l1 = 0;  // Signal we have valid records
+        l2 = 0;
+        goto process_pair;
+    }
     
     // Read pairs alternately until block is full or EOF
     while (1) {
@@ -604,16 +664,22 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
         l2 = kseq_read(seq2);
         if (l2 < 0) {
             fprintf(stderr, "Unpaired read detected: R2 file ended before R1\n");
+            // Clean up on error
             kseq_destroy(seq1);
             kseq_destroy(seq2);
+            seq1 = NULL;
+            seq2 = NULL;
+            have_buffered = 0;
             goto err;
         }
         
+    process_pair:
         // Check if we would exceed block size with both reads
         int record_size1 = seq1->name.l + 1 + seq1->seq.l + seq1->qual.l;
         int record_size2 = seq2->name.l + 1 + seq2->seq.l + seq2->qual.l;
         if (total_size > 0 && total_size + record_size1 + record_size2 > blk_size) {
-            // Block is full, we'll process these reads in the next block
+            // Block is full - buffer this pair for next block
+            have_buffered = 1;
             break;
         }
         
@@ -701,8 +767,12 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
             
             if (fq->len[nr] != seq->qual.l) {
                 fprintf(stderr, "Sequence and quality length mismatch\n");
+                // Clean up on error
                 kseq_destroy(seq1);
                 kseq_destroy(seq2);
+                seq1 = NULL;
+                seq2 = NULL;
+                have_buffered = 0;
                 goto err;
             }
             
@@ -710,14 +780,23 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
         }
     }
     
-    kseq_destroy(seq1);
-    kseq_destroy(seq2);
-    
-    // Set EOF flag if both files reached EOF
+    // Check EOF status and clean up if needed
     if (l1 == -1 && l2 == -1) {
-        *eof_flag = 1;
+        *eof_flag = 1;  // Normal EOF
+        // Clean up static kseq on EOF
+        kseq_destroy(seq1);
+        kseq_destroy(seq2);
+        seq1 = NULL;
+        seq2 = NULL;
+        have_buffered = 0;
     } else if (l1 < -1 || l2 < -1) {
         fprintf(stderr, "Error reading FASTQ files (codes %d, %d)\n", l1, l2);
+        // Clean up on error
+        kseq_destroy(seq1);
+        kseq_destroy(seq2);
+        seq1 = NULL;
+        seq2 = NULL;
+        have_buffered = 0;
         goto err;
     }
     // Note: If l1 >= 0 and l2 >= 0, we broke due to block size and will continue next time
