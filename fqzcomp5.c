@@ -1622,11 +1622,16 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	// Uncompress 3 separate components
 	unsigned int u_len1, u_lenf, u_len2 = 0;
 	unsigned char *out1 = tok3_decode_names(comp+8, clen1, &u_len1);
-	if (!out1)
+	if (!out1) {
+	    fprintf(stderr, "ERROR: tok3_decode_names failed (clen1=%u, expected u_len=%u)\n",
+		    clen1, u_len);
 	    goto err;
+	}
 	unsigned char *outf = rans_uncompress_4x16(comp+8+clen1, clenf,
 						   &u_lenf);
 	if (!outf) {
+	    fprintf(stderr, "ERROR: rans_uncompress_4x16 failed for flags (clenf=%u)\n",
+		    clenf);
 	    free(out1);
 	    goto err;
 	}
@@ -1636,12 +1641,15 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    unsigned char *rout = rans_uncompress_4x16(comp+8+clen1+clenf,
 						       clen2, &rulen);
 	    if (!rout) {
+		fprintf(stderr, "ERROR: rans_uncompress_4x16 failed for comments (clen2=%u)\n",
+			clen2);
 		free(out1);
 		free(outf);
 		goto err;
 	    }
 	    out2 = malloc(u_len);
 	    if (!out2) {
+		fprintf(stderr, "ERROR: malloc failed for out2 (u_len=%u)\n", u_len);
 		free(out1);
 		free(outf);
 		free(rout);
