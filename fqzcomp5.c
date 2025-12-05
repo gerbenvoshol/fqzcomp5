@@ -2179,6 +2179,10 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
     unsigned int *decoded_flags = NULL;
     int num_decoded_records = 0;
     out = (unsigned char *)decode_names(comp, c_len, u_len, c, &decoded_flags, &num_decoded_records);
+    if (!out) {
+        fprintf(stderr, "ERROR: Failed to decode names\n");
+        goto err;
+    }
     fq->name_buf = (char *)out;
     fq->name_len = u_len;
 
@@ -2270,7 +2274,16 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
     } else if (c == LZP3) {
 	unsigned int ru_len;
 	unsigned char *rout = rans_uncompress_4x16(comp, c_len, &ru_len);
+	if (!rout) {
+	    fprintf(stderr, "ERROR: Failed to decompress sequence data (rANS)\n");
+	    goto err;
+	}
 	out = malloc(u_len);
+	if (!out) {
+	    fprintf(stderr, "ERROR: Failed to allocate memory for sequence\n");
+	    free(rout);
+	    goto err;
+	}
 	u_len = unlzp(rout, ru_len, out);
 	free(rout);
     } else if (c == 0) {
@@ -2280,6 +2293,10 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
 	goto err;
     }
 
+    if (!out) {
+	fprintf(stderr, "ERROR: Failed to decode sequence data\n");
+	goto err;
+    }
     fq->seq_buf = (char *)out;
     fq->seq_len = u_len;
     for (i = 0; i < nr; i++)
@@ -2304,6 +2321,10 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
     if (c == 0) {
 	// Rans
 	out = rans_uncompress_4x16(comp, c_len, &u_len);
+	if (!out) {
+	    fprintf(stderr, "ERROR: Failed to decompress quality data (rANS)\n");
+	    goto err;
+	}
 	fq->qual_buf = (char *)out;
 	fq->qual_len = out_len = u_len;
     } else {
@@ -2314,13 +2335,28 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int fil
 	s.flags = fq->flag;
 	//s.seq = (unsigned char **)fq->seq;
 	s.seq = (unsigned char **)malloc(fq->num_records * sizeof(char *));
+	if (!s.seq) {
+	    fprintf(stderr, "ERROR: Failed to allocate memory for sequence pointers\n");
+	    goto err;
+	}
 	for (i = j = 0; i < fq->num_records; j += fq->len[i++])
 	    s.seq[i] = (unsigned char *)fq->seq_buf + j;
 
 	// pass lengths as NULL and fix fqz_decompress to cope?
 	int *lengths = malloc(nr * sizeof(lengths));
+	if (!lengths) {
+	    fprintf(stderr, "ERROR: Failed to allocate memory for lengths\n");
+	    free(s.seq);
+	    goto err;
+	}
 	out = (uint8_t *)fqz_decompress((char *)comp, c_len, &out_len,
 					lengths, nr, &s);
+	if (!out) {
+	    fprintf(stderr, "ERROR: Failed to decompress quality data (FQZ)\n");
+	    free(s.seq);
+	    free(lengths);
+	    goto err;
+	}
 	fq->qual_buf = (char *)out;
 	fq->qual_len = out_len;
 	free(s.seq);
@@ -3556,6 +3592,11 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 		if (j->eof) {
 		    end = 1;
 		} else {
+		    if (!j->fq) {
+			fprintf(stderr, "ERROR: Failed to decode block\n");
+			hts_tpool_delete_result(r, 1);
+			goto err;
+		    }
 		    append_timings(t, &j->t, arg->verbose);
 		    output_fastq(out_fp, j->fq, arg->plus_name);
 		    fastq_free(j->fq);
@@ -3566,6 +3607,11 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 #else
 	t->nblock++;
 	fastq *fq = decode_block(comp, c_len, t, file_version);
+	if (!fq) {
+	    fprintf(stderr, "ERROR: Failed to decode block\n");
+	    free(comp);
+	    return -1;
+	}
 
 	// ----------
 	// Convert back to fastq
@@ -3601,6 +3647,11 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 	if (j->eof) {
 	    end = 1;
 	} else {
+	    if (!j->fq) {
+		fprintf(stderr, "ERROR: Failed to decode block\n");
+		hts_tpool_delete_result(r, 1);
+		goto err;
+	    }
 	    append_timings(t, &j->t, arg->verbose);
 	    output_fastq(out_fp, j->fq, arg->plus_name);
 	    fastq_free(j->fq);
@@ -3690,6 +3741,11 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
                 if (j->eof) {
                     end = 1;
                 } else {
+                    if (!j->fq) {
+                        fprintf(stderr, "ERROR: Failed to decode block\n");
+                        hts_tpool_delete_result(r, 1);
+                        goto err;
+                    }
                     append_timings(t, &j->t, arg->verbose);
                     output_fastq_gzip(out_fp, j->fq, arg->plus_name);
                     fastq_free(j->fq);
@@ -3700,6 +3756,11 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
 #else
         t->nblock++;
         fastq *fq = decode_block(comp, c_len, t, file_version);
+        if (!fq) {
+            fprintf(stderr, "ERROR: Failed to decode block\n");
+            free(comp);
+            return -1;
+        }
 
         output_fastq_gzip(out_fp, fq, arg->plus_name);
 
@@ -3721,6 +3782,11 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
         if (j->eof) {
             end = 1;
         } else {
+            if (!j->fq) {
+                fprintf(stderr, "ERROR: Failed to decode block\n");
+                hts_tpool_delete_result(r, 1);
+                goto err;
+            }
             append_timings(t, &j->t, arg->verbose);
             output_fastq_gzip(out_fp, j->fq, arg->plus_name);
             fastq_free(j->fq);
@@ -3811,6 +3877,11 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
                 if (j->eof) {
                     end = 1;
                 } else {
+                    if (!j->fq) {
+                        fprintf(stderr, "ERROR: Failed to decode block\n");
+                        hts_tpool_delete_result(r, 1);
+                        goto err;
+                    }
                     append_timings(t, &j->t, arg->verbose);
                     output_fastq_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
                     fastq_free(j->fq);
@@ -3821,6 +3892,11 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
 #else
         t->nblock++;
         fastq *fq = decode_block(comp, c_len, t, file_version);
+        if (!fq) {
+            fprintf(stderr, "ERROR: Failed to decode block\n");
+            free(comp);
+            return -1;
+        }
 
         output_fastq_deinterleaved(out_fp1, out_fp2, fq, arg->plus_name);
 
@@ -3842,6 +3918,11 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
         if (j->eof) {
             end = 1;
         } else {
+            if (!j->fq) {
+                fprintf(stderr, "ERROR: Failed to decode block\n");
+                hts_tpool_delete_result(r, 1);
+                goto err;
+            }
             append_timings(t, &j->t, arg->verbose);
             output_fastq_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
             fastq_free(j->fq);
@@ -3932,6 +4013,11 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
                 if (j->eof) {
                     end = 1;
                 } else {
+                    if (!j->fq) {
+                        fprintf(stderr, "ERROR: Failed to decode block\n");
+                        hts_tpool_delete_result(r, 1);
+                        goto err;
+                    }
                     append_timings(t, &j->t, arg->verbose);
                     output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
                     fastq_free(j->fq);
@@ -3942,6 +4028,11 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
 #else
         t->nblock++;
         fastq *fq = decode_block(comp, c_len, t, file_version);
+        if (!fq) {
+            fprintf(stderr, "ERROR: Failed to decode block\n");
+            free(comp);
+            return -1;
+        }
 
         output_fastq_gzip_deinterleaved(out_fp1, out_fp2, fq, arg->plus_name);
 
@@ -3963,6 +4054,11 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
         if (j->eof) {
             end = 1;
         } else {
+            if (!j->fq) {
+                fprintf(stderr, "ERROR: Failed to decode block\n");
+                hts_tpool_delete_result(r, 1);
+                goto err;
+            }
             append_timings(t, &j->t, arg->verbose);
             output_fastq_gzip_deinterleaved(out_fp1, out_fp2, j->fq, arg->plus_name);
             fastq_free(j->fq);
