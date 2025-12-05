@@ -209,6 +209,47 @@ Advanced Options
 ./fqzcomp5 -n 2 -s 1 -q 1 input.fastq output.fqz5
 ```
 
+File Inspection
+---------------
+
+The `--inspect` option provides comprehensive information about FQZ5 compressed files:
+
+```bash
+# Display detailed file information
+./fqzcomp5 --inspect file.fqz5
+```
+
+The `--inspect` command shows:
+- **Format Version**: FQZ5 version (1.1, 1.0, or pre-1.0 legacy)
+- **Compressed Size**: Size of the compressed file
+- **Uncompressed Size**: Estimated original size
+- **Compression Ratio**: Compression factor achieved
+- **Number of Blocks**: Total blocks in the file
+- **Total Records**: Number of FASTQ records
+- **Interleaved Status**: Detection of paired-end interleaving
+- **Index Status**: Whether random access index is present
+- **Integrity Check**: CRC verification status (v1.1 only)
+
+Example output:
+```
+FQZ5 File Inspection
+====================
+
+Format Version:      1.1 (current)
+Compressed Size:     245 bytes (0.00 MB)
+Number of Blocks:    1
+Total Records:       5
+Uncompressed Size:   76800 bytes (0.07 MB)
+Compression Ratio:   313.47x (0.32%)
+Interleaved:         No (odd number of records)
+Index Present:       Yes (1 blocks indexed)
+
+Integrity Check:
+  Status:            OK (all 1 blocks verified)
+```
+
+**Note**: For v1.0 or legacy files, integrity checking is not available and uncompressed size may not be accurately calculated.
+
 Integrity Checking
 ------------------
 

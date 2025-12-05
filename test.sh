@@ -248,6 +248,54 @@ else
 fi
 
 echo ""
+echo "Test Group 7: File Inspection"
+echo "--------------------------------------"
+
+# Test 26: Verify --inspect works on new format files
+./fqzcomp5 test_data/sample.fastq "$TEST_DIR/inspect_test.fqz5" > /dev/null 2>&1
+if ./fqzcomp5 --inspect "$TEST_DIR/inspect_test.fqz5" 2>&1 | grep -q "Format Version"; then
+    print_result "Inspect shows format version" "PASS"
+else
+    print_result "Inspect shows format version" "FAIL"
+fi
+
+# Test 27: Verify --inspect shows compression ratio
+if ./fqzcomp5 --inspect "$TEST_DIR/inspect_test.fqz5" 2>&1 | grep -q "Compression Ratio"; then
+    print_result "Inspect shows compression ratio" "PASS"
+else
+    print_result "Inspect shows compression ratio" "FAIL"
+fi
+
+# Test 28: Verify --inspect shows block information
+if ./fqzcomp5 --inspect "$TEST_DIR/inspect_test.fqz5" 2>&1 | grep -q "Number of Blocks"; then
+    print_result "Inspect shows block information" "PASS"
+else
+    print_result "Inspect shows block information" "FAIL"
+fi
+
+# Test 29: Verify --inspect shows integrity status
+if ./fqzcomp5 --inspect "$TEST_DIR/inspect_test.fqz5" 2>&1 | grep -q "Integrity Check"; then
+    print_result "Inspect shows integrity status" "PASS"
+else
+    print_result "Inspect shows integrity status" "FAIL"
+fi
+
+# Test 30: Verify --inspect detects interleaving for paired files
+./fqzcomp5 test_data/sample_R1.fastq test_data/sample_R2.fastq "$TEST_DIR/paired_inspect.fqz5" > /dev/null 2>&1
+if ./fqzcomp5 --inspect "$TEST_DIR/paired_inspect.fqz5" 2>&1 | grep -q "Possibly"; then
+    print_result "Inspect detects possible interleaving" "PASS"
+else
+    print_result "Inspect detects possible interleaving" "FAIL"
+fi
+
+# Test 31: Verify --inspect works on old format files
+if ./fqzcomp5 --inspect test_data/sample.fqz5 2>&1 | grep -q "1.0 (legacy)"; then
+    print_result "Inspect handles legacy files" "PASS"
+else
+    print_result "Inspect handles legacy files" "FAIL"
+fi
+
+echo ""
 echo "======================================"
 echo "Test Summary"
 echo "======================================"
