@@ -1706,12 +1706,12 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    int flag = 0;
 	    if (cpf < cpf_end)
 		flag = *cpf++;
-	    if ((flag & 1) && cp+1 < cp_end) {
+	    if ((flag & 1) && cp+2 <= cp_end) {
 		*cp++ = '/';
 		*cp++ = (flag & 2) ? '2' : '1';
 	    }
 		
-	    if (flag & 4)
+	    if (flag & 4 && cp < cp_end)
 		*cp++ = (flag & 8) ? '\t' : ' ';
 
 	    if (cp2) {
