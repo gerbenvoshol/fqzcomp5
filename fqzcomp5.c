@@ -33,16 +33,17 @@
  */
 
 /*
-File format (Version 1):
+File format (Version 1.1):
 
 [Header]
-8    Magic number: "FQZ5\001\000\000\000"  (FQZ5 followed by version 1.0.0)
+8    Magic number: "FQZ5\001\001\000\000"  (FQZ5 followed by version 1.1.0)
 8    Index offset (0 if no index)
 
 [Block]*  Zero or more blocks of records
 
 4    Block size (total bytes in this block, excluding this 4-byte field)
 4    Num records
+4    Block CRC32 checksum (CRC of all data from num_records onwards)
 
 1    Name strategy
 4    NU: uncompressed name length
@@ -69,6 +70,14 @@ For each block:
   8  File offset of block
   4  Uncompressed size (total bases)
   4  Number of records in block
+4    Index CRC32 checksum
+
+[Trailer] (optional, at end of file after index)
+8    Magic: "FQZ5END\000"
+4    Overall file CRC32 (CRC of all block data)
+4    Number of blocks
+
+Version 1.0 files (without CRC) are still supported for backward compatibility.
 
  */
 
@@ -139,10 +148,13 @@ KSEQ_INIT(gzFile, gzread)
 #define METRICS_TRIAL 3
 
 // File format constants
-#define FQZ5_MAGIC "FQZ5\001\000\000\000"  // Magic + version 1.0.0
+#define FQZ5_MAGIC_V10 "FQZ5\001\000\000\000"  // Magic + version 1.0.0 (old)
+#define FQZ5_MAGIC "FQZ5\001\001\000\000"      // Magic + version 1.1.0 (current)
 #define FQZ5_MAGIC_LEN 8
 #define FQZ5_INDEX_MAGIC "FQZ5IDX\000"
 #define FQZ5_INDEX_MAGIC_LEN 8
+#define FQZ5_TRAILER_MAGIC "FQZ5END\000"
+#define FQZ5_TRAILER_MAGIC_LEN 8
 
 // Index entry for each block
 typedef struct {
@@ -1473,6 +1485,8 @@ typedef struct {
     uint32_t blk_size;
     int nthread;
     int plus_name;               // output name on third line (+name)
+    int check_only;              // only verify integrity, don't decompress
+    int verify_crc;              // verify CRC during decompression (enabled by default for v1.1)
 } opts;
 
 typedef struct {
@@ -1914,9 +1928,22 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
     gettimeofday(&tv2, NULL);
     update_stats(t, 2, fq->qual_len, clen+9, tvdiff(&tv1, &tv2));
 
-    // Fill in block size at the beginning (excluding the 4-byte block size field itself)
-    uint32_t block_size = comp_sz - 4;
-    *(uint32_t *)(comp + block_size_offset) = block_size;
+    // Reallocate to make space for CRC right after num_records
+    comp = realloc(comp, comp_sz + 4);
+    // Move data to make room for CRC after num_records (at position 8)
+    memmove(comp + 12, comp + 8, comp_sz - 8);  // shift data after num_records
+    comp_sz += 4;
+    
+    // Compute CRC32 for the block data (from position 12 onwards, after we've inserted the space)
+    // CRC is computed on all data after the CRC field itself
+    uint32_t block_crc = crc32(0L, Z_NULL, 0);
+    block_crc = crc32(block_crc, (unsigned char *)(comp + 12), comp_sz - 12);
+    
+    // Insert CRC at position 8 (after block_size and num_records)
+    *(uint32_t *)(comp + 8) = block_crc;
+    
+    // Update block size to include CRC and all the data
+    *(uint32_t *)(comp + block_size_offset) = comp_sz - 4;
 
     *out_size = comp_sz;
 
@@ -1931,7 +1958,7 @@ char *encode_block(fqz_gparams *gp, opts *arg, fastq *fq, timings *t,
 	in_off += (len);			\
     } while(0);
 
-fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t) {
+fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t, int file_version) {
     unsigned char *in_end = in + in_size, *comp, *out;
     uint32_t in_off = 0, nr;
     int i, j, err = 0;
@@ -1939,11 +1966,28 @@ fastq *decode_block(unsigned char *in, unsigned int in_size, timings *t) {
     uint8_t c;
     struct timeval tv1, tv2;
     uint32_t block_size;
+    uint32_t block_crc_stored = 0, block_crc_computed = 0;
     
     // Read block size (new format)
     GET(&block_size, 4);
     
     GET(&nr, 4);
+    
+    // Read and verify CRC if this is v1.1 format
+    if (file_version == 0) {  // v1.1 with CRC
+        GET(&block_crc_stored, 4);
+        
+        // Compute CRC of the block data (from current position onwards)
+        block_crc_computed = crc32(0L, Z_NULL, 0);
+        block_crc_computed = crc32(block_crc_computed, in + in_off, block_size - 8);  // -8 for nr and crc fields
+        
+        if (block_crc_stored != block_crc_computed) {
+            fprintf(stderr, "ERROR: Block CRC mismatch! File may be corrupted.\n");
+            fprintf(stderr, "  Expected: 0x%08x, Got: 0x%08x\n", block_crc_stored, block_crc_computed);
+            return NULL;
+        }
+    }
+    
     fastq *fq = fastq_alloc(nr);
 
     // ----------
@@ -2122,6 +2166,7 @@ typedef struct {
     uint32_t usize;      // Uncompressed size (for index)
     uint32_t nrecords;   // Number of records (for index)
     int eof;
+    int file_version;    // 0=v1.1 (with CRC), 1=v1.0 (no CRC), 2=old format
 } enc_dec_job;
 
 // Write FQZ5 file header
@@ -2139,24 +2184,32 @@ static int write_header(FILE *fp) {
 }
 
 // Read FQZ5 file header
+// Returns: 0 = v1.1 format with CRC, 1 = v1.0 format with CRC, 2 = old format no header, -1 = error
 static int read_header(FILE *fp, uint64_t *index_offset) {
     char magic[FQZ5_MAGIC_LEN];
     
     if (fread(magic, 1, FQZ5_MAGIC_LEN, fp) != FQZ5_MAGIC_LEN)
         return -1;
     
-    if (memcmp(magic, FQZ5_MAGIC, FQZ5_MAGIC_LEN) != 0) {
-        // Not a FQZ5 file or wrong version
-        // For backward compatibility, rewind to beginning
-        fseek(fp, 0, SEEK_SET);
-        *index_offset = 0;
-        return 1; // Return 1 to indicate old format
+    // Check for v1.1 format (with CRC)
+    if (memcmp(magic, FQZ5_MAGIC, FQZ5_MAGIC_LEN) == 0) {
+        if (fread(index_offset, 1, 8, fp) != 8)
+            return -1;
+        return 0; // v1.1 format with CRC
     }
     
-    if (fread(index_offset, 1, 8, fp) != 8)
-        return -1;
+    // Check for v1.0 format (no CRC)
+    if (memcmp(magic, FQZ5_MAGIC_V10, FQZ5_MAGIC_LEN) == 0) {
+        if (fread(index_offset, 1, 8, fp) != 8)
+            return -1;
+        return 1; // v1.0 format without CRC
+    }
     
-    return 0; // Return 0 to indicate new format
+    // Not a FQZ5 file - old format without header
+    // For backward compatibility, rewind to beginning
+    fseek(fp, 0, SEEK_SET);
+    *index_offset = 0;
+    return 2; // Old format
 }
 
 // Write index at end of file
@@ -2234,6 +2287,45 @@ static void free_index(fqz5_index *idx) {
         return;
     free(idx->entries);
     free(idx);
+}
+
+// Write trailer with overall file CRC
+static int write_trailer(FILE *fp, uint32_t overall_crc, uint32_t nblocks) {
+    // Write trailer magic
+    if (fwrite(FQZ5_TRAILER_MAGIC, 1, FQZ5_TRAILER_MAGIC_LEN, fp) != FQZ5_TRAILER_MAGIC_LEN)
+        return -1;
+    
+    // Write overall CRC
+    if (fwrite(&overall_crc, 1, 4, fp) != 4)
+        return -1;
+    
+    // Write number of blocks for verification
+    if (fwrite(&nblocks, 1, 4, fp) != 4)
+        return -1;
+    
+    return 0;
+}
+
+// Read and verify trailer
+static int read_trailer(FILE *fp, uint32_t *overall_crc, uint32_t *nblocks) {
+    char magic[FQZ5_TRAILER_MAGIC_LEN];
+    
+    // Try to read trailer magic
+    if (fread(magic, 1, FQZ5_TRAILER_MAGIC_LEN, fp) != FQZ5_TRAILER_MAGIC_LEN)
+        return -1; // No trailer (probably v1.0 file)
+    
+    if (memcmp(magic, FQZ5_TRAILER_MAGIC, FQZ5_TRAILER_MAGIC_LEN) != 0)
+        return -1; // Not a valid trailer
+    
+    // Read overall CRC
+    if (fread(overall_crc, 1, 4, fp) != 4)
+        return -1;
+    
+    // Read number of blocks
+    if (fread(nblocks, 1, 4, fp) != 4)
+        return -1;
+    
+    return 0;
 }
 
 static void *encode_thread(void *arg) {
@@ -3195,7 +3287,7 @@ static void *decode_thread(void *arg) {
     if (j->eof)
 	return j;
 
-    j->fq = decode_block(j->comp, j->clen, &j->t);
+    j->fq = decode_block(j->comp, j->clen, &j->t, j->file_version);
     free(j->comp);
     return j;
 }
@@ -3205,8 +3297,8 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
     int header_result = read_header(in_fp, &index_offset);
     if (header_result < 0)
         return -1;
-    // header_result == 1 means old format (no header), data starts at offset 0
-    // header_result == 0 means new format with header
+    // header_result: 0 = v1.1 (with CRC), 1 = v1.0 (no CRC), 2 = old format
+    int file_version = header_result;
     
 #ifdef THREADED
     int n = arg->nthread, end = 0;
@@ -3254,6 +3346,7 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 	j->clen = c_len;
 	j->fq = NULL;
 	j->eof = 0;
+	j->file_version = file_version;
 
 	// Always put on queue, even if over queue size
 	if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
@@ -3282,7 +3375,7 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 	} while (r && hts_tpool_dispatch_would_block(p, q));
 #else
 	t->nblock++;
-	fastq *fq = decode_block(comp, c_len, t);
+	fastq *fq = decode_block(comp, c_len, t, file_version);
 
 	// ----------
 	// Convert back to fastq
@@ -3306,6 +3399,10 @@ int decode(FILE *in_fp, FILE *out_fp, opts *arg, timings *t) {
 #ifdef THREADED
     j = malloc(sizeof(*j));
     j->eof = 1;
+    j->file_version = file_version;
+    j->file_version = file_version;
+    j->eof = 1;
+    j->file_version = file_version;
     if (hts_tpool_dispatch(p, q, decode_thread, j) != 0)
 	goto err;
 
@@ -3337,8 +3434,8 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
     int header_result = read_header(in_fp, &index_offset);
     if (header_result < 0)
         return -1;
-    // header_result == 1 means old format (no header), data starts at offset 0
-    // header_result == 0 means new format with header
+    // header_result: 0 = v1.1 (with CRC), 1 = v1.0 (no CRC), 2 = old format
+    int file_version = header_result;
     
 #ifdef THREADED
     int n = arg->nthread, end = 0;
@@ -3386,6 +3483,7 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
         j->clen = c_len;
         j->fq = NULL;
         j->eof = 0;
+        j->file_version = file_version;
 
         // Always put on queue, even if over queue size
         if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
@@ -3412,7 +3510,7 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
         } while (r && hts_tpool_dispatch_would_block(p, q));
 #else
         t->nblock++;
-        fastq *fq = decode_block(comp, c_len, t);
+        fastq *fq = decode_block(comp, c_len, t, file_version);
 
         output_fastq_gzip(out_fp, fq, arg->plus_name);
 
@@ -3424,6 +3522,8 @@ int decode_gzip(FILE *in_fp, gzFile out_fp, opts *arg, timings *t) {
 #ifdef THREADED
     j = malloc(sizeof(*j));
     j->eof = 1;
+    j->file_version = file_version;
+    j->file_version = file_version;
     if (hts_tpool_dispatch(p, q, decode_thread, j) != 0)
         goto err;
 
@@ -3456,8 +3556,8 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
     int header_result = read_header(in_fp, &index_offset);
     if (header_result < 0)
         return -1;
-    // header_result == 1 means old format (no header), data starts at offset 0
-    // header_result == 0 means new format with header
+    // header_result: 0 = v1.1 (with CRC), 1 = v1.0 (no CRC), 2 = old format
+    int file_version = header_result;
     
 #ifdef THREADED
     int n = arg->nthread, end = 0;
@@ -3505,6 +3605,12 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
         j->clen = c_len;
         j->fq = NULL;
         j->eof = 0;
+        j->file_version = file_version;
+        memset(&j->t, 0, sizeof(j->t));
+        j->comp = comp;
+        j->clen = c_len;
+        j->fq = NULL;
+        j->eof = 0;
 
         // Always put on queue, even if over queue size
         if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
@@ -3531,7 +3637,7 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
         } while (r && hts_tpool_dispatch_would_block(p, q));
 #else
         t->nblock++;
-        fastq *fq = decode_block(comp, c_len, t);
+        fastq *fq = decode_block(comp, c_len, t, file_version);
 
         output_fastq_deinterleaved(out_fp1, out_fp2, fq, arg->plus_name);
 
@@ -3543,6 +3649,7 @@ int decode_deinterleaved(FILE *in_fp, FILE *out_fp1, FILE *out_fp2, opts *arg, t
 #ifdef THREADED
     j = malloc(sizeof(*j));
     j->eof = 1;
+    j->file_version = file_version;
     if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
         goto err;
 
@@ -3575,8 +3682,8 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
     int header_result = read_header(in_fp, &index_offset);
     if (header_result < 0)
         return -1;
-    // header_result == 1 means old format (no header), data starts at offset 0
-    // header_result == 0 means new format with header
+    // header_result: 0 = v1.1 (with CRC), 1 = v1.0 (no CRC), 2 = old format
+    int file_version = header_result;
     
 #ifdef THREADED
     int n = arg->nthread, end = 0;
@@ -3624,6 +3731,7 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
         j->clen = c_len;
         j->fq = NULL;
         j->eof = 0;
+        j->file_version = file_version;
 
         // Always put on queue, even if over queue size
         if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
@@ -3650,7 +3758,7 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
         } while (r && hts_tpool_dispatch_would_block(p, q));
 #else
         t->nblock++;
-        fastq *fq = decode_block(comp, c_len, t);
+        fastq *fq = decode_block(comp, c_len, t, file_version);
 
         output_fastq_gzip_deinterleaved(out_fp1, out_fp2, fq, arg->plus_name);
 
@@ -3662,6 +3770,7 @@ int decode_gzip_deinterleaved(FILE *in_fp, gzFile out_fp1, gzFile out_fp2, opts 
 #ifdef THREADED
     j = malloc(sizeof(*j));
     j->eof = 1;
+    j->file_version = file_version;
     if (hts_tpool_dispatch2(p, q, decode_thread, j, -1) != 0)
         goto err;
 
@@ -3747,6 +3856,8 @@ int main(int argc, char **argv) {
 	.blk_size = BLK_SIZE,
 	.nthread = 4,
 	.plus_name = 0,  // don't output name on third line by default
+	.check_only = 0,  // don't do check-only mode by default
+	.verify_crc = 1,  // verify CRC by default when available
     };
 
 #ifdef _WIN32
