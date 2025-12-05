@@ -1380,6 +1380,8 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 			  unsigned int *fq_flags, int num_records) {
     // TODO: work out a better maximum bound
     char *nout = malloc(name_len*2+1000), *cp = nout;
+    if (!nout)
+	return NULL;
     
     *(uint32_t *)cp = name_len; cp += 4;
     *cp++ = strat; // name method;
@@ -1388,6 +1390,10 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 	unsigned char *lzp_out = (unsigned char *)cp;
 	unsigned int clen = lzp(name_buf, name_len, lzp_out);
 	unsigned char *out = rans_compress_4x16(lzp_out, clen, &clen, 5);
+	if (!out) {
+	    free(nout);
+	    return NULL;
+	}
 	*(uint32_t *)cp = clen; cp += 4;
 	memcpy(cp, out, clen);  cp += clen;
 	free(out);
@@ -1396,14 +1402,33 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 	int clen;
 	unsigned char *out = tok3_encode_names((char *)name_buf, name_len,
 					       level, 0, &clen, NULL);
+	if (!out) {
+	    free(nout);
+	    return NULL;
+	}
 	*(uint32_t *)cp = clen; cp += 4;
 	memcpy(cp, out, clen);  cp += clen;
 	free(out);
 
     } else {
 	char *n1 = malloc(name_len);
+	if (!n1) {
+	    free(nout);
+	    return NULL;
+	}
 	char *n2 = malloc(name_len);
-	unsigned char *flag = malloc(name_len/2);  //Worst case\n 
+	if (!n2) {
+	    free(n1);
+	    free(nout);
+	    return NULL;
+	}
+	unsigned char *flag = malloc(name_len/2);  // Worst case
+	if (!flag) {
+	    free(n1);
+	    free(n2);
+	    free(nout);
+	    return NULL;
+	}
 	char *cp1 = n1, *cp2 = n2;
 	int i = 0, nr = 0;
 	// Flag bit 0: has "/NUM"
@@ -1447,22 +1472,16 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 
 	    // Use fq_flags array if provided to set /1 or /2 flag
 	    // This is crucial for paired-end reads that don't have explicit /1 /2 in names
-	    if (fq_flags && nr < num_records) {
-		if (fq_flags[nr] & FQZ_FREAD2) {
-		    // Mark as /2
-		    if (!(f & 1)) {
-			// Doesn't already have /1 or /2, so add /2
-			f |= 3;  // bit 0 (has /NUM) + bit 1 (/2)
-		    } else if (!(f & 2)) {
-			// Has /1, change to /2
-			f |= 2;  // set bit 1 to make it /2
-		    }
-		} else {
-		    // Mark as /1 or no flag
-		    if (!(f & 1)) {
-			// Doesn't already have /1 or /2, so add /1
-			f |= 1;  // bit 0 only (has /1)
-		    }
+	    // Only apply this logic if fq_flags indicates this is actually an R2 read
+	    // (paired-end R2 reads need to be marked with /2 flag)
+	    if (fq_flags && nr < num_records && (fq_flags[nr] & FQZ_FREAD2)) {
+		// This is an R2 read in paired-end data, mark as /2
+		if (!(f & 1)) {
+		    // Doesn't already have /1 or /2, so add /2
+		    f |= 3;  // bit 0 (has /NUM) + bit 1 (/2)
+		} else if (!(f & 2)) {
+		    // Has /1, change to /2
+		    f |= 2;  // set bit 1 to make it /2
 		}
 	    }
 
@@ -1484,13 +1503,46 @@ static char *encode_names(unsigned char *name_buf,  unsigned int name_len,
 	unsigned int clenf, clen2 = 0;
 	unsigned char *out = tok3_encode_names(n1, cp1-n1, level, 0, &clen1,
 					       NULL);
+	if (!out) {
+	    free(n1);
+	    free(n2);
+	    free(flag);
+	    free(nout);
+	    return NULL;
+	}
 	unsigned char *outf = rans_compress_4x16(flag, nr, &clenf, 129);
+	if (!outf) {
+	    free(out);
+	    free(n1);
+	    free(n2);
+	    free(flag);
+	    free(nout);
+	    return NULL;
+	}
 	unsigned char *out2 = NULL;
 	if (cp2 != n2) {
 	    unsigned char *lzp_out = malloc((cp2-n2)*2);
+	    if (!lzp_out) {
+		free(out);
+		free(outf);
+		free(n1);
+		free(n2);
+		free(flag);
+		free(nout);
+		return NULL;
+	    }
 	    clen2 = lzp((unsigned char *)n2, cp2-n2, lzp_out);
 	    out2 = rans_compress_4x16(lzp_out, clen2, &clen2, 5);
 	    free(lzp_out);
+	    if (!out2) {
+		free(out);
+		free(outf);
+		free(n1);
+		free(n2);
+		free(flag);
+		free(nout);
+		return NULL;
+	    }
 	}
 
 	unsigned int clen = clen1 + clenf + clen2 + 8;
@@ -1525,7 +1577,13 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
     if (strat == 0) {
 	unsigned int ru_len;
 	unsigned char *rout = rans_uncompress_4x16(comp, c_len, &ru_len);
+	if (!rout)
+	    goto err;
 	out = malloc(u_len);
+	if (!out) {
+	    free(rout);
+	    goto err;
+	}
 	u_len = unlzp(rout, ru_len, out);
 	free(rout);
 	// No flag array for strat 0
@@ -1535,6 +1593,8 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	    *out_num_records = 0;
     } else if (strat == 1) {
 	out = tok3_decode_names(comp, c_len, &u_len);
+	if (!out)
+	    goto err;
 	// No flag array for strat 1
 	if (out_flags)
 	    *out_flags = NULL;
@@ -1543,19 +1603,52 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
     } else {
 	uint32_t clen1 = *(uint32_t *)comp;
 	uint32_t clenf = *(uint32_t *)(comp+4);
+	
+	// Sanity check: ensure lengths are valid
+	if (c_len < clen1 + clenf + 8) {
+	    fprintf(stderr, "ERROR: Invalid compressed name data (c_len=%u, clen1=%u, clenf=%u)\n",
+		    c_len, clen1, clenf);
+	    goto err;
+	}
+	
 	uint32_t clen2 = c_len - clen1 - clenf - 8;
 
 	// Uncompress 3 separate components
 	unsigned int u_len1, u_lenf, u_len2 = 0;
 	unsigned char *out1 = tok3_decode_names(comp+8, clen1, &u_len1);
+	if (!out1) {
+	    fprintf(stderr, "ERROR: tok3_decode_names failed (clen1=%u, expected u_len=%u)\n",
+		    clen1, u_len);
+	    goto err;
+	}
 	unsigned char *outf = rans_uncompress_4x16(comp+8+clen1, clenf,
 						   &u_lenf);
+	if (!outf) {
+	    fprintf(stderr, "ERROR: rans_uncompress_4x16 failed for flags (clenf=%u)\n",
+		    clenf);
+	    free(out1);
+	    goto err;
+	}
 	unsigned char *out2 = NULL;
 	if (clen2) {
 	    unsigned int rulen;
 	    unsigned char *rout = rans_uncompress_4x16(comp+8+clen1+clenf,
 						       clen2, &rulen);
+	    if (!rout) {
+		fprintf(stderr, "ERROR: rans_uncompress_4x16 failed for comments (clen2=%u)\n",
+			clen2);
+		free(out1);
+		free(outf);
+		goto err;
+	    }
 	    out2 = malloc(u_len);
+	    if (!out2) {
+		fprintf(stderr, "ERROR: malloc failed for out2 (u_len=%u)\n", u_len);
+		free(out1);
+		free(outf);
+		free(rout);
+		goto err;
+	    }
 	    u_len2 = unlzp(rout, rulen, out2);
 	    free(rout);
 	}
@@ -1577,6 +1670,14 @@ static char *decode_names(unsigned char *comp,  unsigned int c_len,
 	unsigned char *cpf = outf, *cpf_end = outf+u_lenf;
 	unsigned char *cp2 = out2, *cp2_end = out2 + u_len2;
 	out = malloc(u_len);
+	if (!out) {
+	    free(out1);
+	    free(outf);
+	    free(out2);
+	    if (decoded_flags)
+		free(decoded_flags);
+	    goto err;
+	}
 	unsigned char *cp  = out,  *cp_end = out + u_len;
 	unsigned char *last_cp = NULL;
 	int record_idx = 0;
