@@ -594,7 +594,13 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
  err:
     fprintf(stderr, "Failed to load fastq input with kseq\n");
     fastq_free(fq);
-    
+    // Clean up static state on error to prevent memory leaks and invalid state
+    if (seq != NULL) {
+        kseq_destroy(seq);
+        seq = NULL;
+        last_fp = NULL;
+        have_buffered = 0;
+    }
     return NULL;
 }
 
@@ -816,7 +822,18 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
  err:
     fprintf(stderr, "Failed to load interleaved fastq input\n");
     fastq_free(fq);
-    
+    // Clean up static state on error to prevent memory leaks and invalid state
+    if (seq1 != NULL) {
+        kseq_destroy(seq1);
+        seq1 = NULL;
+    }
+    if (seq2 != NULL) {
+        kseq_destroy(seq2);
+        seq2 = NULL;
+    }
+    last_fp1 = NULL;
+    last_fp2 = NULL;
+    have_buffered = 0;
     return NULL;
 }
 
