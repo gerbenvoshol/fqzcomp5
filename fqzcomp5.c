@@ -4086,36 +4086,68 @@ int inspect_file(FILE *in_fp, opts *arg) {
                 integrity_errors++;
             }
             
-            // Try to estimate uncompressed size by reading the block metadata
-            // We need to parse name, length, sequence, and quality sections
+            // Parse block metadata to calculate uncompressed size
+            // Format: name, length, sequence, quality sections
             unsigned char *ptr = data;
             unsigned char *end = data + data_size;
             
-            // Name section
-            if (ptr < end) {
+            // Name section: u_len (4), strategy (1), c_len (4), data
+            if (ptr + 9 <= end) {
+                uint32_t name_usize, name_csize;
+                memcpy(&name_usize, ptr, 4); ptr += 4;
                 ptr++; // skip name_strat
-                if (ptr + 8 <= end) {
-                    uint32_t name_usize, name_csize;
-                    memcpy(&name_usize, ptr, 4); ptr += 4;
-                    memcpy(&name_csize, ptr, 4); ptr += 4;
-                    total_uncompressed += name_usize;
-                    if (ptr + name_csize <= end) {
-                        ptr += name_csize;
-                    } else {
-                        // Compressed data extends beyond block - file may be truncated
-                        ptr = end;
+                memcpy(&name_csize, ptr, 4); ptr += 4;
+                total_uncompressed += name_usize;
+                if (ptr + name_csize <= end) {
+                    ptr += name_csize;
+                } else {
+                    // Compressed data extends beyond block - file may be truncated
+                    ptr = end;
+                }
+            }
+            
+            // Length section: strategy (1), followed by variable data
+            if (ptr < end) {
+                uint8_t len_strat = *ptr;
+                ptr++; // skip len_strat
+                if (len_strat > 0) {
+                    // Fixed length - skip the varint encoded length
+                    int nb = 0;
+                    // Simple varint decode to advance ptr
+                    while (ptr + nb < end && nb < 5) {
+                        if ((ptr[nb] & 0x80) == 0) {
+                            nb++;
+                            break;
+                        }
+                        nb++;
+                    }
+                    ptr += nb;
+                } else {
+                    // Variable length - skip compressed length field + data
+                    if (ptr + 4 <= end) {
+                        uint32_t blen;
+                        memcpy(&blen, ptr, 4);
+                        // Validate blen to prevent integer overflow
+                        // Reasonable upper bound: blocks are typically < 1GB
+                        if (blen > 0 && blen < 1000000000) {
+                            // Bounds check before advancing pointer
+                            if (ptr + 4 + blen <= end) {
+                                ptr += 4 + blen;
+                            } else {
+                                ptr = end;  // Truncated data
+                            }
+                        } else if (blen == 0) {
+                            // Empty variable length section, just skip the length field
+                            ptr += 4;
+                        } else {
+                            // Suspicious blen value, treat as truncated
+                            ptr = end;
+                        }
                     }
                 }
             }
             
-            // Length section
-            if (ptr < end) {
-                ptr++; // skip len_strat
-                // Length encoding is variable, skip it for now
-                // Just estimate based on num_records * average length
-            }
-            
-            // Sequence section
+            // Sequence section: strategy (1), u_len (4), c_len (4), data
             if (ptr + 9 <= end) {
                 ptr++; // skip seq_strat
                 uint32_t seq_usize, seq_csize;
@@ -4125,17 +4157,26 @@ int inspect_file(FILE *in_fp, opts *arg) {
                 if (ptr + seq_csize <= end) {
                     ptr += seq_csize;
                     
-                    // Quality section should match sequence size
+                    // Quality section: strategy (1), u_len (4), c_len (4), data
                     if (ptr + 9 <= end) {
                         ptr++; // skip qual_strat
-                        ptr += 8; // skip qual_usize and qual_csize
-                        // Don't double count - quality is same size as sequence
+                        uint32_t qual_usize, qual_csize;
+                        memcpy(&qual_usize, ptr, 4); ptr += 4;
+                        memcpy(&qual_csize, ptr, 4); ptr += 4;
+                        total_uncompressed += qual_usize; // Quality scores
                     }
                 } else {
                     // Compressed data extends beyond block - file may be truncated
                     ptr = end;
                 }
             }
+            
+            // Add overhead for FASTQ format:
+            // Each record has: @ + name + \n + seq + \n + + + \n + qual + \n
+            // Stored names include null terminators, so overhead is:
+            // 1(@) + 1(\n after seq) + 1(+) + 1(\n after +) + 1(\n after qual) = 5 bytes
+            // (The \n after name replaces the stored \0)
+            total_uncompressed += num_records * 5;
             
             free(data);
         } else {
