@@ -1,6 +1,9 @@
 # Build artifacts
 *.o
 fqzcomp5
+fqzcomp5-debug
+fqzcomp5-static
+fqzcomp5-debug-static
 
 # Test files (but allow test_data directory)
 *.fastq
