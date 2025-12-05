@@ -3,8 +3,8 @@ all: fqzcomp5
 # Compiler and flags
 CC ?= gcc
 INCLUDES = -I.
-CFLAGS = -g -O3 -Wall
-LDFLAGS =
+CFLAGS = -O3 -Wall -march=native -mtune=native -ffast-math -funroll-loops -fomit-frame-pointer
+LDFLAGS = -Wl,-O1 -Wl,--as-needed
 LIBS = -lz -lm -lbz2 -pthread
 
 # Main fqzcomp5 objects

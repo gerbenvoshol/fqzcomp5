@@ -113,7 +113,6 @@ Thus ht[h] predicts the bytes at in[i].
 int lzp(unsigned char *in, int in_len, unsigned char *out) {
     int out_len = 0, i;
     int ht[1<<HASH_LEN] = {0};
-    int hmask = (1<<HASH_LEN)-1;
 
     int h = 0;
     for (i = 0; i < in_len; i++) {
@@ -167,7 +166,6 @@ int lzp(unsigned char *in, int in_len, unsigned char *out) {
 int unlzp(unsigned char *in, int in_len, unsigned char *out) {
     int i, j;
     int ht[1<<HASH_LEN] = {0};
-    int hmask = (1<<HASH_LEN)-1;
 
     int h = 0;
     for (i = j = 0; i < in_len; i++) {
