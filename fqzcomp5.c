@@ -125,6 +125,10 @@ Version 1.0 files (without CRC) are still supported for backward compatibility.
 #include <sys/time.h>
 #include <zlib.h>
 
+#ifdef __SSE__
+#include <xmmintrin.h>
+#endif
+
 #include "htscodecs/varint.h"
 #include "htscodecs/fqzcomp_qual.h"
 #include "htscodecs/tokenise_name3.h"
@@ -1152,7 +1156,9 @@ char *encode_seq(unsigned char *in,  unsigned int in_size,
 			 +(i+j+3<in_size
 			   ?L[in[i+j+1]]*16+L[in[i+j+2]]*4+L[in[i+j+3]]
 			   :0);
+#ifdef __SSE__
 		_mm_prefetch((const char *)&seq_model[pf], _MM_HINT_T0);
+#endif
 
 		// 0.7% and 3.2% smaller for _.FQ and _.fq respectively
 		// (at ctx_size 12), but 45% more CPU for seq encoding.
@@ -1308,8 +1314,10 @@ char *decode_seq(unsigned char *in,  unsigned int in_size,
 		unsigned char b =
 		    SMALL_MODEL(4, _decodeSymbol)(&seq_model[last], &rc);
 		last = ((last<<2) + b) & mask;
+#ifdef __SSE__
 		_mm_prefetch((const char *)&seq_model[(last<<4)&mask],
 			     _MM_HINT_T0);
+#endif
 		out[i+j] = bases[b];
 
 		if (both_strands) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2020 Genome Research Ltd.
+ * Copyright (c) 2014-2022 Genome Research Ltd.
  * Author(s): James Bonfield
  *
  * Redistribution and use in source and binary forms, with or without
@@ -89,11 +89,14 @@ unsigned char *rans_compress_O0(unsigned char *in, unsigned int in_size,
     if (!out_buf)
         return NULL;
 
-    ptr = out_end = out_buf + (int)(1.05*in_size) + 257*257*3 + 9;
+    ptr = out_end = out_buf + (uint32_t)(1.05*in_size) + 257*257*3 + 9;
 
     // Compute statistics
-    hist8(in, in_size, (uint32_t *)F);
-    tr = ((uint64_t)TOTFREQ<<31)/in_size + (1<<30)/in_size;
+    if (hist8(in, in_size, (uint32_t *)F) < 0) {
+        free(out_buf);
+        return NULL;
+    }
+    tr = in_size ? ((uint64_t)TOTFREQ<<31)/in_size + (1<<30)/in_size : 0;
 
  normalise_harder:
     // Normalise so T[i] == TOTFREQ
@@ -164,8 +167,11 @@ unsigned char *rans_compress_O0(unsigned char *in, unsigned int in_size,
 
     switch (i=(in_size&3)) {
     case 3: RansEncPutSymbol(&rans2, &ptr, &syms[in[in_size-(i-2)]]);
+        // fall-through
     case 2: RansEncPutSymbol(&rans1, &ptr, &syms[in[in_size-(i-1)]]);
+        // fall-through
     case 1: RansEncPutSymbol(&rans0, &ptr, &syms[in[in_size-(i-0)]]);
+        // fall-through
     case 0:
         break;
     }
@@ -358,10 +364,13 @@ unsigned char *rans_uncompress_O0(unsigned char *in, unsigned int in_size,
     switch(out_sz&3) {
     case 3:
         out_buf[out_end + 2] = ssym[R[2] & mask];
+        // fall-through
     case 2:
         out_buf[out_end + 1] = ssym[R[1] & mask];
+        // fall-through
     case 1:
         out_buf[out_end] = ssym[R[0] & mask];
+        // fall-through
     default:
         break;
     }
@@ -401,10 +410,14 @@ unsigned char *rans_compress_O1(unsigned char *in, unsigned int in_size,
     out_buf = malloc(1.05*in_size + 257*257*3 + 9);
     if (!out_buf) goto cleanup;
 
-    out_end = out_buf + (int)(1.05*in_size) + 257*257*3 + 9;
+    out_end = out_buf + (uint32_t)(1.05*in_size) + 257*257*3 + 9;
     cp = out_buf+9;
 
-    hist1_4(in, in_size, (uint32_t (*)[256])F, (uint32_t *)T);
+    if (hist1_4(in, in_size, (uint32_t (*)[256])F, (uint32_t *)T) < 0) {
+        free(out_buf);
+        out_buf = NULL;
+        goto cleanup;
+    }
 
     F[0][in[1*(in_size>>2)]]++;
     F[0][in[2*(in_size>>2)]]++;
@@ -815,6 +828,11 @@ unsigned char *rans_uncompress_O1(unsigned char *in, unsigned int in_size,
  */
 unsigned char *rans_compress(unsigned char *in, unsigned int in_size,
                              unsigned int *out_size, int order) {
+    if (in_size > INT_MAX) {
+        *out_size = 0;
+        return NULL;
+    }
+
     return order
         ? rans_compress_O1(in, in_size, out_size)
         : rans_compress_O0(in, in_size, out_size);
