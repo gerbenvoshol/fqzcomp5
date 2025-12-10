@@ -122,8 +122,8 @@ Usage
 Basic Usage
 -----------
 
-Fqzcomp5 supports compression and decompression of FASTQ files, with automatic handling of 
-gzipped input/output and paired-end files.
+Fqzcomp5 supports compression and decompression of both FASTQ and FASTA files, with automatic 
+format detection, gzipped input/output handling, and paired-end file support.
 
 **Compress a single FASTQ file:**
 ```bash
@@ -143,6 +143,21 @@ gzipped input/output and paired-end files.
 **Decompress to paired-end files:**
 ```bash
 ./fqzcomp5 -d input.fqz5 output_R1.fastq output_R2.fastq
+```
+
+**FASTA file compression (automatic format detection):**
+```bash
+# Compress a single FASTA file
+./fqzcomp5 input.fasta output.fqz5
+
+# Decompress
+./fqzcomp5 -d input.fqz5 output.fasta
+
+# Compress paired FASTA files (with automatic interleaving)
+./fqzcomp5 input_R1.fasta input_R2.fasta output.fqz5
+
+# Decompress to paired FASTA files
+./fqzcomp5 -d input.fqz5 output_R1.fasta output_R2.fasta
 ```
 
 **Gzipped files are handled transparently:**
