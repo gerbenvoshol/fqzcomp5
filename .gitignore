@@ -11,3 +11,4 @@ fqzcomp5-debug-static
 *.fqz5
 !test_data/*.fastq
 !test_data/*.fqz5
+*.orig

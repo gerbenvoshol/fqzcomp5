@@ -5291,7 +5291,7 @@ int main(int argc, char **argv) {
             gzclose(gz_in_fp1);
             gzclose(gz_in_fp2);
         } else {
-            if (gz_in_fp1) gzclose(gz_in_fp1); else if (in_fp1) fclose(in_fp1);
+            gzclose(gz_in_fp1);
         }
         fclose(out_fp1);
     }
