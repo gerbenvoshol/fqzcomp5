@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2021 Genome Research Ltd.
+ * Copyright (c) 2017-2023 Genome Research Ltd.
  * Author(s): James Bonfield
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,7 +32,7 @@
  */
 
 #include "config.h"
-#ifdef __ARM_NEON
+#if defined(__ARM_NEON) && defined(__aarch64__)
 #include <arm_neon.h>
 
 #include <limits.h>
@@ -84,7 +84,8 @@ unsigned char *rans_compress_O0_32x16_neon(unsigned char *in,
     uint8_t* ptr;
     uint32_t F[256+MAGIC] = {0};
     int i, j, tab_size = 0, x, z;
-    int bound = rans_compress_bound_4x16(in_size,0)-20; // -20 for order/size/meta
+    // -20 for order/size/meta
+    uint32_t bound = rans_compress_bound_4x16(in_size,0)-20;
 
     if (!out) {
         *out_size = bound;
@@ -103,7 +104,8 @@ unsigned char *rans_compress_O0_32x16_neon(unsigned char *in,
         goto empty;
 
     // Compute statistics
-    hist8(in, in_size, F);
+    if (hist8(in, in_size, F) < 0)
+        return NULL;
 
     // Normalise so frequences sum to power of 2
     uint32_t fsum = in_size;
@@ -912,7 +914,8 @@ unsigned char *rans_compress_O1_32x16_neon(unsigned char *in,
                                            unsigned int *out_size) {
     unsigned char *cp, *out_end, *out_free = NULL;
     unsigned int tab_size;
-    int bound = rans_compress_bound_4x16(in_size,1)-20, z;
+    uint32_t bound = rans_compress_bound_4x16(in_size,1)-20;
+    int z;
     RansState ransN[NX];
 
     if (in_size < NX) // force O0 instead
@@ -1235,7 +1238,7 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
 //  }
 
     for (z = 0; z < NX; z+=4) {
-        *(uint64_t *)&out[iN[z]] =
+        uint64_t t0[4] = {
             ((uint64_t)(t[0][z])<< 0) +
             ((uint64_t)(t[1][z])<< 8) +
             ((uint64_t)(t[2][z])<<16) +
@@ -1243,36 +1246,8 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
             ((uint64_t)(t[4][z])<<32) +
             ((uint64_t)(t[5][z])<<40) +
             ((uint64_t)(t[6][z])<<48) +
-            ((uint64_t)(t[7][z])<<56);
-        *(uint64_t *)&out[iN[z+1]] =
-            ((uint64_t)(t[0][z+1])<< 0) +
-            ((uint64_t)(t[1][z+1])<< 8) +
-            ((uint64_t)(t[2][z+1])<<16) +
-            ((uint64_t)(t[3][z+1])<<24) +
-            ((uint64_t)(t[4][z+1])<<32) +
-            ((uint64_t)(t[5][z+1])<<40) +
-            ((uint64_t)(t[6][z+1])<<48) +
-            ((uint64_t)(t[7][z+1])<<56);
-        *(uint64_t *)&out[iN[z+2]] =
-            ((uint64_t)(t[0][z+2])<< 0) +
-            ((uint64_t)(t[1][z+2])<< 8) +
-            ((uint64_t)(t[2][z+2])<<16) +
-            ((uint64_t)(t[3][z+2])<<24) +
-            ((uint64_t)(t[4][z+2])<<32) +
-            ((uint64_t)(t[5][z+2])<<40) +
-            ((uint64_t)(t[6][z+2])<<48) +
-            ((uint64_t)(t[7][z+2])<<56);
-        *(uint64_t *)&out[iN[z+3]] =
-            ((uint64_t)(t[0][z+3])<< 0) +
-            ((uint64_t)(t[1][z+3])<< 8) +
-            ((uint64_t)(t[2][z+3])<<16) +
-            ((uint64_t)(t[3][z+3])<<24) +
-            ((uint64_t)(t[4][z+3])<<32) +
-            ((uint64_t)(t[5][z+3])<<40) +
-            ((uint64_t)(t[6][z+3])<<48) +
-            ((uint64_t)(t[7][z+3])<<56);
+            ((uint64_t)(t[7][z])<<56),
 
-        *(uint64_t *)&out[iN[z]+8] =
             ((uint64_t)(t[8+0][z])<< 0) +
             ((uint64_t)(t[8+1][z])<< 8) +
             ((uint64_t)(t[8+2][z])<<16) +
@@ -1280,36 +1255,8 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
             ((uint64_t)(t[8+4][z])<<32) +
             ((uint64_t)(t[8+5][z])<<40) +
             ((uint64_t)(t[8+6][z])<<48) +
-            ((uint64_t)(t[8+7][z])<<56);
-        *(uint64_t *)&out[iN[z+1]+8] =
-            ((uint64_t)(t[8+0][z+1])<< 0) +
-            ((uint64_t)(t[8+1][z+1])<< 8) +
-            ((uint64_t)(t[8+2][z+1])<<16) +
-            ((uint64_t)(t[8+3][z+1])<<24) +
-            ((uint64_t)(t[8+4][z+1])<<32) +
-            ((uint64_t)(t[8+5][z+1])<<40) +
-            ((uint64_t)(t[8+6][z+1])<<48) +
-            ((uint64_t)(t[8+7][z+1])<<56);
-        *(uint64_t *)&out[iN[z+2]+8] =
-            ((uint64_t)(t[8+0][z+2])<< 0) +
-            ((uint64_t)(t[8+1][z+2])<< 8) +
-            ((uint64_t)(t[8+2][z+2])<<16) +
-            ((uint64_t)(t[8+3][z+2])<<24) +
-            ((uint64_t)(t[8+4][z+2])<<32) +
-            ((uint64_t)(t[8+5][z+2])<<40) +
-            ((uint64_t)(t[8+6][z+2])<<48) +
-            ((uint64_t)(t[8+7][z+2])<<56);
-        *(uint64_t *)&out[iN[z+3]+8] =
-            ((uint64_t)(t[8+0][z+3])<< 0) +
-            ((uint64_t)(t[8+1][z+3])<< 8) +
-            ((uint64_t)(t[8+2][z+3])<<16) +
-            ((uint64_t)(t[8+3][z+3])<<24) +
-            ((uint64_t)(t[8+4][z+3])<<32) +
-            ((uint64_t)(t[8+5][z+3])<<40) +
-            ((uint64_t)(t[8+6][z+3])<<48) +
-            ((uint64_t)(t[8+7][z+3])<<56);
+            ((uint64_t)(t[8+7][z])<<56),
 
-        *(uint64_t *)&out[iN[z]+16] =
             ((uint64_t)(t[16+0][z])<< 0) +
             ((uint64_t)(t[16+1][z])<< 8) +
             ((uint64_t)(t[16+2][z])<<16) +
@@ -1317,36 +1264,8 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
             ((uint64_t)(t[16+4][z])<<32) +
             ((uint64_t)(t[16+5][z])<<40) +
             ((uint64_t)(t[16+6][z])<<48) +
-            ((uint64_t)(t[16+7][z])<<56);
-        *(uint64_t *)&out[iN[z+1]+16] =
-            ((uint64_t)(t[16+0][z+1])<< 0) +
-            ((uint64_t)(t[16+1][z+1])<< 8) +
-            ((uint64_t)(t[16+2][z+1])<<16) +
-            ((uint64_t)(t[16+3][z+1])<<24) +
-            ((uint64_t)(t[16+4][z+1])<<32) +
-            ((uint64_t)(t[16+5][z+1])<<40) +
-            ((uint64_t)(t[16+6][z+1])<<48) +
-            ((uint64_t)(t[16+7][z+1])<<56);
-        *(uint64_t *)&out[iN[z+2]+16] =
-            ((uint64_t)(t[16+0][z+2])<< 0) +
-            ((uint64_t)(t[16+1][z+2])<< 8) +
-            ((uint64_t)(t[16+2][z+2])<<16) +
-            ((uint64_t)(t[16+3][z+2])<<24) +
-            ((uint64_t)(t[16+4][z+2])<<32) +
-            ((uint64_t)(t[16+5][z+2])<<40) +
-            ((uint64_t)(t[16+6][z+2])<<48) +
-            ((uint64_t)(t[16+7][z+2])<<56);
-        *(uint64_t *)&out[iN[z+3]+16] =
-            ((uint64_t)(t[16+0][z+3])<< 0) +
-            ((uint64_t)(t[16+1][z+3])<< 8) +
-            ((uint64_t)(t[16+2][z+3])<<16) +
-            ((uint64_t)(t[16+3][z+3])<<24) +
-            ((uint64_t)(t[16+4][z+3])<<32) +
-            ((uint64_t)(t[16+5][z+3])<<40) +
-            ((uint64_t)(t[16+6][z+3])<<48) +
-            ((uint64_t)(t[16+7][z+3])<<56);
+            ((uint64_t)(t[16+7][z])<<56),
 
-        *(uint64_t *)&out[iN[z]+24] =
             ((uint64_t)(t[24+0][z])<< 0) +
             ((uint64_t)(t[24+1][z])<< 8) +
             ((uint64_t)(t[24+2][z])<<16) +
@@ -1354,8 +1273,38 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
             ((uint64_t)(t[24+4][z])<<32) +
             ((uint64_t)(t[24+5][z])<<40) +
             ((uint64_t)(t[24+6][z])<<48) +
-            ((uint64_t)(t[24+7][z])<<56);
-        *(uint64_t *)&out[iN[z+1]+24] =
+            ((uint64_t)(t[24+7][z])<<56)
+        };
+        memcpy(&out[iN[z]], &t0, 32);
+
+        uint64_t t1[4] = {
+            ((uint64_t)(t[0][z+1])<< 0) +
+            ((uint64_t)(t[1][z+1])<< 8) +
+            ((uint64_t)(t[2][z+1])<<16) +
+            ((uint64_t)(t[3][z+1])<<24) +
+            ((uint64_t)(t[4][z+1])<<32) +
+            ((uint64_t)(t[5][z+1])<<40) +
+            ((uint64_t)(t[6][z+1])<<48) +
+            ((uint64_t)(t[7][z+1])<<56),
+
+            ((uint64_t)(t[8+0][z+1])<< 0) +
+            ((uint64_t)(t[8+1][z+1])<< 8) +
+            ((uint64_t)(t[8+2][z+1])<<16) +
+            ((uint64_t)(t[8+3][z+1])<<24) +
+            ((uint64_t)(t[8+4][z+1])<<32) +
+            ((uint64_t)(t[8+5][z+1])<<40) +
+            ((uint64_t)(t[8+6][z+1])<<48) +
+            ((uint64_t)(t[8+7][z+1])<<56),
+
+            ((uint64_t)(t[16+0][z+1])<< 0) +
+            ((uint64_t)(t[16+1][z+1])<< 8) +
+            ((uint64_t)(t[16+2][z+1])<<16) +
+            ((uint64_t)(t[16+3][z+1])<<24) +
+            ((uint64_t)(t[16+4][z+1])<<32) +
+            ((uint64_t)(t[16+5][z+1])<<40) +
+            ((uint64_t)(t[16+6][z+1])<<48) +
+            ((uint64_t)(t[16+7][z+1])<<56),
+
             ((uint64_t)(t[24+0][z+1])<< 0) +
             ((uint64_t)(t[24+1][z+1])<< 8) +
             ((uint64_t)(t[24+2][z+1])<<16) +
@@ -1363,8 +1312,38 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
             ((uint64_t)(t[24+4][z+1])<<32) +
             ((uint64_t)(t[24+5][z+1])<<40) +
             ((uint64_t)(t[24+6][z+1])<<48) +
-            ((uint64_t)(t[24+7][z+1])<<56);
-        *(uint64_t *)&out[iN[z+2]+24] =
+            ((uint64_t)(t[24+7][z+1])<<56)
+        };
+        memcpy(&out[iN[z+1]], &t1, 32);
+
+        uint64_t t2[4] = {
+            ((uint64_t)(t[0][z+2])<< 0) +
+            ((uint64_t)(t[1][z+2])<< 8) +
+            ((uint64_t)(t[2][z+2])<<16) +
+            ((uint64_t)(t[3][z+2])<<24) +
+            ((uint64_t)(t[4][z+2])<<32) +
+            ((uint64_t)(t[5][z+2])<<40) +
+            ((uint64_t)(t[6][z+2])<<48) +
+            ((uint64_t)(t[7][z+2])<<56),
+
+            ((uint64_t)(t[8+0][z+2])<< 0) +
+            ((uint64_t)(t[8+1][z+2])<< 8) +
+            ((uint64_t)(t[8+2][z+2])<<16) +
+            ((uint64_t)(t[8+3][z+2])<<24) +
+            ((uint64_t)(t[8+4][z+2])<<32) +
+            ((uint64_t)(t[8+5][z+2])<<40) +
+            ((uint64_t)(t[8+6][z+2])<<48) +
+            ((uint64_t)(t[8+7][z+2])<<56),
+
+            ((uint64_t)(t[16+0][z+2])<< 0) +
+            ((uint64_t)(t[16+1][z+2])<< 8) +
+            ((uint64_t)(t[16+2][z+2])<<16) +
+            ((uint64_t)(t[16+3][z+2])<<24) +
+            ((uint64_t)(t[16+4][z+2])<<32) +
+            ((uint64_t)(t[16+5][z+2])<<40) +
+            ((uint64_t)(t[16+6][z+2])<<48) +
+            ((uint64_t)(t[16+7][z+2])<<56),
+
             ((uint64_t)(t[24+0][z+2])<< 0) +
             ((uint64_t)(t[24+1][z+2])<< 8) +
             ((uint64_t)(t[24+2][z+2])<<16) +
@@ -1372,8 +1351,39 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
             ((uint64_t)(t[24+4][z+2])<<32) +
             ((uint64_t)(t[24+5][z+2])<<40) +
             ((uint64_t)(t[24+6][z+2])<<48) +
-            ((uint64_t)(t[24+7][z+2])<<56);
-        *(uint64_t *)&out[iN[z+3]+24] =
+            ((uint64_t)(t[24+7][z+2])<<56),
+
+        };
+        memcpy(&out[iN[z+2]], &t2, 32);
+
+        uint64_t t3[4] =  {
+            ((uint64_t)(t[0][z+3])<< 0) +
+            ((uint64_t)(t[1][z+3])<< 8) +
+            ((uint64_t)(t[2][z+3])<<16) +
+            ((uint64_t)(t[3][z+3])<<24) +
+            ((uint64_t)(t[4][z+3])<<32) +
+            ((uint64_t)(t[5][z+3])<<40) +
+            ((uint64_t)(t[6][z+3])<<48) +
+            ((uint64_t)(t[7][z+3])<<56),
+
+            ((uint64_t)(t[8+0][z+3])<< 0) +
+            ((uint64_t)(t[8+1][z+3])<< 8) +
+            ((uint64_t)(t[8+2][z+3])<<16) +
+            ((uint64_t)(t[8+3][z+3])<<24) +
+            ((uint64_t)(t[8+4][z+3])<<32) +
+            ((uint64_t)(t[8+5][z+3])<<40) +
+            ((uint64_t)(t[8+6][z+3])<<48) +
+            ((uint64_t)(t[8+7][z+3])<<56),
+
+            ((uint64_t)(t[16+0][z+3])<< 0) +
+            ((uint64_t)(t[16+1][z+3])<< 8) +
+            ((uint64_t)(t[16+2][z+3])<<16) +
+            ((uint64_t)(t[16+3][z+3])<<24) +
+            ((uint64_t)(t[16+4][z+3])<<32) +
+            ((uint64_t)(t[16+5][z+3])<<40) +
+            ((uint64_t)(t[16+6][z+3])<<48) +
+            ((uint64_t)(t[16+7][z+3])<<56),
+
             ((uint64_t)(t[24+0][z+3])<< 0) +
             ((uint64_t)(t[24+1][z+3])<< 8) +
             ((uint64_t)(t[24+2][z+3])<<16) +
@@ -1381,7 +1391,9 @@ static inline void transpose_and_copy(uint8_t *out, int iN[32],
             ((uint64_t)(t[24+4][z+3])<<32) +
             ((uint64_t)(t[24+5][z+3])<<40) +
             ((uint64_t)(t[24+6][z+3])<<48) +
-            ((uint64_t)(t[24+7][z+3])<<56);
+            ((uint64_t)(t[24+7][z+3])<<56)
+        };
+        memcpy(&out[iN[z+3]], &t3, 32);
 
         iN[z+0] += 32;
         iN[z+1] += 32;
@@ -1442,7 +1454,7 @@ unsigned char *rans_uncompress_O1_32x16_neon(unsigned char *in,
         uint32_t u_freq_sz, c_freq_sz;
         cp += var_get_u32(cp, cp_end, &u_freq_sz);
         cp += var_get_u32(cp, cp_end, &c_freq_sz);
-        if (c_freq_sz >= cp_end - cp - 16)
+        if (c_freq_sz > cp_end - cp)
             goto err;
         tab_end = cp + c_freq_sz;
         if (!(c_freq = rans_uncompress_O0_4x16(cp, c_freq_sz, NULL, u_freq_sz)))
@@ -1953,4 +1965,7 @@ unsigned char *rans_uncompress_O1_32x16_neon(unsigned char *in,
 }
 
 #undef MAGIC2
+#else  /* __ARM_NEON */
+// Prevent "empty translation unit" errors when building without NEON
+const char *rANS_static32x16pr_neon_disabled = "No NEON";
 #endif /* __ARM_NEON */

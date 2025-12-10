@@ -6,7 +6,7 @@
 #include "utils.h"
 
 /*
- * Copyright (c) 2017-2021 Genome Research Ltd.
+ * Copyright (c) 2017-2022 Genome Research Ltd.
  * Author(s): James Bonfield
  *
  * Redistribution and use in source and binary forms, with or without
@@ -78,7 +78,8 @@ unsigned char *rans_compress_O0_4x16(unsigned char *in, unsigned int in_size,
 unsigned char *rans_uncompress_O0_4x16(unsigned char *in, unsigned int in_size,
                                        unsigned char *out, unsigned int out_sz);
 
-int rans_compute_shift(uint32_t *F0, uint32_t (*F)[256], uint32_t *T, int *S);
+int rans_compute_shift(uint32_t *F0, uint32_t (*F)[256], uint32_t *T,
+                       uint32_t *S);
 
 // Rounds to next power of 2.
 // credit to http://graphics.stanford.edu/~seander/bithacks.html
@@ -293,8 +294,6 @@ static inline int encode_freq_d(uint8_t *cp, uint32_t *F0, uint32_t *F) {
                 dz++;
                 *cp++ = 0;
             }
-        } else {
-            assert(F[j] == 0);
         }
     }
     
@@ -312,7 +311,7 @@ static inline int encode_freq_d(uint8_t *cp, uint32_t *F0, uint32_t *F) {
 // Returns the desired TF_SHIFT; 10 or 12 bit, or -1 on error.
 static inline int encode_freq1(uint8_t *in, uint32_t in_size, int Nway,
                                RansEncSymbol syms[256][256], uint8_t **cp_p) {
-    int tab_size = 0, i, j, z;
+    int i, j, z;
     uint8_t *out = *cp_p, *cp = out;
 
     // Compute O1 frequency statistics
@@ -321,7 +320,8 @@ static inline int encode_freq1(uint8_t *in, uint32_t in_size, int Nway,
         return -1;
     uint32_t T[256+MAGIC] = {0};
     int isz4 = in_size/Nway;
-    hist1_4(in, in_size, F, T);
+    if (hist1_4(in, in_size, F, T) < 0)
+        goto err;
     for (z = 1; z < Nway; z++)
         F[0][in[z*isz4]]++;
     T[0]+=Nway-1;
@@ -362,7 +362,7 @@ static inline int encode_freq1(uint8_t *in, uint32_t in_size, int Nway,
 
     // Decide between 10-bit and 12-bit freqs.
     // Fills out S[] to hold the new scaled maximum value.
-    int S[256] = {0};
+    uint32_t S[256] = {0};
     int shift = rans_compute_shift(T, F, T, S);
 
     // Normalise so T[i] == TOTFREQ_O1
@@ -372,7 +372,7 @@ static inline int encode_freq1(uint8_t *in, uint32_t in_size, int Nway,
         if (T[i] == 0)
             continue;
 
-        int max_val = S[i];
+        uint32_t max_val = S[i];
         if (shift == TF_SHIFT_O1_FAST && max_val > TOTFREQ_O1_FAST)
             max_val = TOTFREQ_O1_FAST;
 
@@ -410,9 +410,6 @@ static inline int encode_freq1(uint8_t *in, uint32_t in_size, int Nway,
         }
         free(c_freq);
     }
-
-    tab_size = cp - out;
-    assert(tab_size < 257*257*3);
 
     *cp_p = cp;
     htscodecs_tls_free(F);
@@ -540,15 +537,13 @@ static inline int decode_freq1(uint8_t *cp, uint8_t *cp_end, int shift,
 
 // Build s3 symbol lookup table.
 // This is 12 bit freq, 12 bit bias and 8 bit symbol.
-static inline int rans_F_to_s3(uint32_t *F, int shift, uint32_t *s3) {
-    int j, x, y;
+static inline int rans_F_to_s3(const uint32_t *F, int shift, uint32_t *s3) {
+    int j, x;
     for (j = x = 0; j < 256; j++) {
-        if (F[j]) {
-            if (F[j] > (1<<shift) - x)
-                return 1;
-            for (y = 0; y < F[j]; y++)
-                s3[y+x] = (((uint32_t)F[j])<<(shift+8))|(y<<8)|j;
-            x += F[j];
+        if (F[j] && F[j] <= (1<<shift) - x) {
+            uint32_t base = (((uint32_t)F[j])<<(shift+8))|j, y;
+            for (y = 0; y < F[j]; y++, x++)
+                s3[x] = base + (y<<8);
         }
     }
 

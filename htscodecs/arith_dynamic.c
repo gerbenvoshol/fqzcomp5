@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 Genome Research Ltd.
+ * Copyright (c) 2019-2022, 2025 Genome Research Ltd.
  * Author(s): James Bonfield
  *
  * Redistribution and use in source and binary forms, with or without
@@ -75,11 +75,14 @@
 #define MAGIC 8
 
 unsigned int arith_compress_bound(unsigned int size, int order) {
+    int N = (order>>8) & 0xff;
+    if (!N) N=4;
     return (order == 0
         ? 1.05*size + 257*3 + 4
-        : 1.05*size + 257*257*3 + 4 + 257*3+4) +
+        : 1.05*size + 257*257*3 + 4 + 257*3+4) + 5 +
         ((order & X_PACK) ? 1 : 0) +
-        ((order & X_RLE) ? 1 + 257*3+4: 0) + 5;
+        ((order & X_RLE) ? 1 + 257*3+4: 0) +
+        ((order & X_STRIPE) ? 7 + 5*N: 0);
 }
 
 #ifndef MODEL_256 // see fqzcomp_qual_fuzz.c
@@ -95,10 +98,11 @@ static
 unsigned char *arith_compress_O0(unsigned char *in, unsigned int in_size,
                                  unsigned char *out, unsigned int *out_size) {
     int i, bound = arith_compress_bound(in_size,0)-5; // -5 for order/size
+    unsigned char *out_free = NULL;
 
     if (!out) {
         *out_size = bound;
-        out = malloc(*out_size);
+        out_free = out = malloc(*out_size);
     }
     if (!out || bound > *out_size)
         return NULL;
@@ -115,12 +119,16 @@ unsigned char *arith_compress_O0(unsigned char *in, unsigned int in_size,
 
     RangeCoder rc;
     RC_SetOutput(&rc, (char *)out+1);
+    RC_SetOutputEnd(&rc, (char *)out + *out_size);
     RC_StartEncode(&rc);
 
     for (i = 0; i < in_size; i++)
         SIMPLE_MODEL(256, _encodeSymbol)(&byte_model, &rc, in[i]);
 
-    RC_FinishEncode(&rc);
+    if (RC_FinishEncode(&rc) < 0) {
+        free(out_free);
+        return NULL;
+    }
 
     // Finalise block size and return it
     *out_size = RC_OutSize(&rc)+1;
@@ -138,8 +146,9 @@ unsigned char *arith_uncompress_O0(unsigned char *in, unsigned int in_size,
     SIMPLE_MODEL(256,_) byte_model;
     SIMPLE_MODEL(256,_init)(&byte_model, m);
 
+    unsigned char *out_free = NULL;
     if (!out)
-        out = malloc(out_sz);
+        out_free = out = malloc(out_sz);
     if (!out)
         return NULL;
 
@@ -149,7 +158,10 @@ unsigned char *arith_uncompress_O0(unsigned char *in, unsigned int in_size,
     for (i = 0; i < out_sz; i++)
         out[i] = SIMPLE_MODEL(256, _decodeSymbol)(&byte_model, &rc);
 
-    RC_FinishDecode(&rc);
+    if (RC_FinishDecode(&rc) < 0) {
+        free(out_free);
+        return NULL;
+    }
     
     return out;
 }
@@ -189,6 +201,7 @@ unsigned char *arith_compress_O1(unsigned char *in, unsigned int in_size,
 
     RangeCoder rc;
     RC_SetOutput(&rc, (char *)out+1);
+    RC_SetOutputEnd(&rc, (char *)out + *out_size);
     RC_StartEncode(&rc);
 
     uint8_t last = 0;
@@ -197,7 +210,11 @@ unsigned char *arith_compress_O1(unsigned char *in, unsigned int in_size,
         last = in[i];
     }
 
-    RC_FinishEncode(&rc);
+    if (RC_FinishEncode(&rc) < 0) {
+        free(out_free);
+        htscodecs_tls_free(byte_model);
+        return NULL;
+    }
 
     // Finalise block size and return it
     *out_size = RC_OutSize(&rc)+1;
@@ -238,7 +255,11 @@ unsigned char *arith_uncompress_O1(unsigned char *in, unsigned int in_size,
         last = out[i];
     }
 
-    RC_FinishDecode(&rc);
+    if (RC_FinishDecode(&rc) < 0) {
+        htscodecs_tls_free(byte_model);
+        free(out_free);
+        return NULL;
+    }
     
     htscodecs_tls_free(byte_model);
     return out;
@@ -256,10 +277,11 @@ unsigned char *arith_compress_O2(unsigned char *in, unsigned int in_size,
 
     int i, j;
     int bound = arith_compress_bound(in_size,0)-5; // -5 for order/size
+    unsigned char *out_free = NULL;
 
     if (!out) {
         *out_size = bound;
-        out = malloc(*out_size);
+        out_free = out = malloc(*out_size);
     }
     if (!out || bound > *out_size)
         return NULL;
@@ -282,6 +304,7 @@ unsigned char *arith_compress_O2(unsigned char *in, unsigned int in_size,
 
     RangeCoder rc;
     RC_SetOutput(&rc, (char *)out+1);
+    RC_SetOutputEnd(&rc, (char *)out + *out_size);
     RC_StartEncode(&rc);
 
     unsigned char last1 = 0, last2 = 0;
@@ -292,7 +315,10 @@ unsigned char *arith_compress_O2(unsigned char *in, unsigned int in_size,
     }
 
     free(byte_model);
-    RC_FinishEncode(&rc);
+    if (RC_FinishEncode(&rc) < 0) {
+        free(out_free);
+        return NULL;
+    }
 
     // Finalise block size and return it
     *out_size = RC_OutSize(&rc)+1;
@@ -307,9 +333,10 @@ unsigned char *arith_compress_O2(unsigned char *in, unsigned int in_size,
     int i, j;
     int bound = arith_compress_bound(in_size,0)-5; // -5 for order/size
 
+    unsigned char *out_free = NULL;
     if (!out) {
         *out_size = bound;
-        out = malloc(*out_size);
+        out_free = out = malloc(*out_size);
     }
     if (!out || bound > *out_size)
         return NULL;
@@ -335,6 +362,7 @@ unsigned char *arith_compress_O2(unsigned char *in, unsigned int in_size,
 
     RangeCoder rc;
     RC_SetOutput(&rc, (char *)out+1);
+    RC_SetOutputEnd(&rc, (char *)out + *out_size);
     RC_StartEncode(&rc);
 
     unsigned char last1 = 0, last2 = 0;
@@ -352,7 +380,10 @@ unsigned char *arith_compress_O2(unsigned char *in, unsigned int in_size,
     }
 
     free(byte_model);
-    RC_FinishEncode(&rc);
+    if (RC_FinishEncode(&rc) < 0) {
+        free(out_free);
+        return NULL;
+    }
 
     // Finalise block size and return it
     *out_size = RC_OutSize(&rc)+1;
@@ -372,8 +403,9 @@ unsigned char *arith_uncompress_O2(unsigned char *in, unsigned int in_size,
         for (j = 0; j < 256; j++)
             SIMPLE_MODEL(256,_init)(&byte_model[i*256+j], m);
     
+    unsigned char *out_free = NULL;
     if (!out)
-        out = malloc(out_sz);
+        out_free = out = malloc(out_sz);
     if (!out)
         return NULL;
 
@@ -388,7 +420,10 @@ unsigned char *arith_uncompress_O2(unsigned char *in, unsigned int in_size,
     }
 
     free(byte_model);
-    RC_FinishDecode(&rc);
+    if (RC_FinishDecode(&rc) < 0) {
+        free(out_free);
+        return NULL;
+    }
     
     return out;
 }
@@ -437,6 +472,7 @@ unsigned char *arith_compress_O0_RLE(unsigned char *in, unsigned int in_size,
 
     RangeCoder rc;
     RC_SetOutput(&rc, (char *)out+1);
+    RC_SetOutputEnd(&rc, (char *)out + *out_size);
     RC_StartEncode(&rc);
 
     unsigned char last = 0;
@@ -463,7 +499,11 @@ unsigned char *arith_compress_O0_RLE(unsigned char *in, unsigned int in_size,
         } while (run);
     }
 
-    RC_FinishEncode(&rc);
+    if (RC_FinishEncode(&rc) < 0) {
+        htscodecs_tls_free(run_model);
+        free(out_free);
+        return NULL;
+    }
 
     // Finalise block size and return it
     *out_size = RC_OutSize(&rc)+1;
@@ -521,7 +561,11 @@ unsigned char *arith_uncompress_O0_RLE(unsigned char *in, unsigned int in_size,
             out[++i] = last;
     }
 
-    RC_FinishDecode(&rc);
+    if (RC_FinishDecode(&rc) < 0) {
+        htscodecs_tls_free(run_model);
+        free(out_free);
+        return NULL;
+    }
 
     htscodecs_tls_free(run_model);
     return out;
@@ -568,6 +612,7 @@ unsigned char *arith_compress_O1_RLE(unsigned char *in, unsigned int in_size,
 
     RangeCoder rc;
     RC_SetOutput(&rc, (char *)out+1);
+    RC_SetOutputEnd(&rc, (char *)out + *out_size);
     RC_StartEncode(&rc);
 
     unsigned char last = 0;
@@ -594,7 +639,12 @@ unsigned char *arith_compress_O1_RLE(unsigned char *in, unsigned int in_size,
         } while (run);
     }
 
-    RC_FinishEncode(&rc);
+    if (RC_FinishEncode(&rc) < 0) {
+        htscodecs_tls_free(byte_model);
+        htscodecs_tls_free(run_model);
+        free(out_free);
+        return NULL;
+    }
 
     // Finalise block size and return it
     *out_size = RC_OutSize(&rc)+1;
@@ -660,7 +710,12 @@ unsigned char *arith_uncompress_O1_RLE(unsigned char *in, unsigned int in_size,
             out[++i] = last;
     }
 
-    RC_FinishDecode(&rc);
+    if (RC_FinishDecode(&rc) < 0) {
+        htscodecs_tls_free(byte_model);
+        htscodecs_tls_free(run_model);
+        free(out_free);
+        return NULL;
+    }
 
     htscodecs_tls_free(byte_model);
     htscodecs_tls_free(run_model);
@@ -678,10 +733,17 @@ unsigned char *arith_compress_to(unsigned char *in,  unsigned int in_size,
     unsigned int c_meta_len;
     uint8_t *rle = NULL, *packed = NULL;
 
+    if (in_size > INT_MAX || (out && *out_size == 0)) {
+        *out_size = 0;
+        return NULL;
+    }
+
     if (!out) {
         *out_size = arith_compress_bound(in_size, order);
-        if (!(out = malloc(*out_size)))
+        if (!(out = malloc(*out_size))) {
+            *out_size = 0;
             return NULL;
+        }
     }
     unsigned char *out_end = out + *out_size;
 
@@ -691,24 +753,30 @@ unsigned char *arith_compress_to(unsigned char *in,  unsigned int in_size,
     if (order & X_CAT) {
         out[0] = X_CAT;
         c_meta_len = 1 + var_put_u32(&out[1], out_end, in_size);
+        if (c_meta_len + in_size > *out_size) {
+            *out_size = 0;
+            return NULL;
+        }
         memcpy(out+c_meta_len, in, in_size);
         *out_size = in_size+c_meta_len;
     }
 
     if (order & X_STRIPE) {
-        int N = (order>>8);
+        int N = (order>>8) & 0xff;
         if (N == 0) N = 4; // default for compatibility with old tests
 
-        if (N > 255)
-            return NULL;
+        if (N > in_size)
+            N = in_size;
 
         unsigned char *transposed = malloc(in_size);
         unsigned int part_len[256];
         unsigned int idx[256];
-        if (!transposed)
+        if (!transposed) {
+            *out_size = 0;
             return NULL;
-        int i, j, x;
+        }
 
+        int i, j, x;
         for (i = 0; i < N; i++) {
             part_len[i] = in_size / N + ((in_size % N) > i);
             idx[i] = i ? idx[i-1] + part_len[i-1] : 0; // cumulative index
@@ -728,13 +796,20 @@ unsigned char *arith_compress_to(unsigned char *in,  unsigned int in_size,
         c_meta_len = 1;
         *out = order & ~X_NOSZ;
         c_meta_len += var_put_u32(out+c_meta_len, out_end, in_size);
+        if (c_meta_len >= *out_size) {
+            free(transposed);
+            *out_size = 0;
+            return NULL;
+        }
+
         out[c_meta_len++] = N;
 
-        out2_start = out2 = out+2+5*N; // shares a buffer with c_meta
+        out2_start = out2 = out+7+5*N; // shares a buffer with c_meta
         for (i = 0; i < N; i++) {
             // Brute force try all methods.
             // FIXME: optimise this bit.  Maybe learn over time?
             int j, best_j = 0, best_sz = INT_MAX;
+            uint8_t *r;
 
             // Works OK with read names. The first byte is the most important,
             // as it has most variability (little-endian).  After that it's
@@ -783,24 +858,37 @@ unsigned char *arith_compress_to(unsigned char *in,  unsigned int in_size,
 //                        {1, 128}};
 
             for (j = 1; j <= m[MIN(i,3)][0]; j++) {
+                if (out2 - out > *out_size)
+                    continue; // an error, but caught in best_sz check later
+
                 olen2 = *out_size - (out2 - out);
                 //fprintf(stderr, "order=%d m=%d\n", order&3, m[MIN(i,4)][j]);
                 if ((order&3) == 0 && (m[MIN(i,3)][j]&1))
                     continue;
 
-                arith_compress_to(transposed+idx[i], part_len[i],
-                                  out2, &olen2, m[MIN(i,3)][j] | X_NOSZ);
-                if (best_sz > olen2) {
+                r = arith_compress_to(transposed+idx[i], part_len[i],
+                                      out2, &olen2, m[MIN(i,3)][j] | X_NOSZ);
+                if (r && olen2 && best_sz > olen2) {
                     best_sz = olen2;
                     best_j = j;
                 }
             }
-//          if (best_j == 0) // none desireable
-//              return NULL;
+
+            if (best_sz == INT_MAX) {
+                free(transposed);
+                *out_size = 0;
+                return NULL;
+            }
             if (best_j != j-1) {
                 olen2 = *out_size - (out2 - out);
-                arith_compress_to(transposed+idx[i], part_len[i],
-                                  out2, &olen2, m[MIN(i,3)][best_j] | X_NOSZ);
+                r = arith_compress_to(transposed+idx[i], part_len[i],
+                                      out2, &olen2,
+                                      m[MIN(i,3)][best_j] | X_NOSZ);
+                if (!r) {
+                    free(transposed);
+                    *out_size = 0;
+                    return NULL;
+                }
             }
             out2 += olen2;
             c_meta_len += var_put_u32(out+c_meta_len, out_end, olen2);
@@ -833,8 +921,12 @@ unsigned char *arith_compress_to(unsigned char *in,  unsigned int in_size,
         // PACK 2, 4 or 8 symbols into one byte.
         int pmeta_len;
         uint64_t packed_len;
+        if (c_meta_len + 256 > *out_size) {
+            *out_size = 0;
+            return NULL;
+        }
         packed = hts_pack(in, in_size, out+c_meta_len, &pmeta_len, &packed_len);
-        if (!packed || (pmeta_len == 1 && out[c_meta_len] > 16)) {
+        if (!packed) {
             out[0] &= ~X_PACK;
             do_pack = 0;
             free(packed);
@@ -874,6 +966,7 @@ unsigned char *arith_compress_to(unsigned char *in,  unsigned int in_size,
 #else
         fprintf(stderr, "Htscodecs has been compiled without libbz2 support\n");
         free(out);
+        *out_size = 0;
         return NULL;
 #endif
 
@@ -885,25 +978,40 @@ unsigned char *arith_compress_to(unsigned char *in,  unsigned int in_size,
 //      *out_size = lzma_size;
 
     } else {
+        uint8_t *r;
         if (do_rle) {
             if (order == 0)
-                arith_compress_O0_RLE(in, in_size, out+c_meta_len, out_size);
+                r=arith_compress_O0_RLE(in, in_size, out+c_meta_len, out_size);
             else
-                arith_compress_O1_RLE(in, in_size, out+c_meta_len, out_size);
+                r=arith_compress_O1_RLE(in, in_size, out+c_meta_len, out_size);
         } else {
             //if (order == 2)
             //  arith_compress_O2(in, in_size, out+c_meta_len, out_size);
             //else
             if (order == 1)
-                arith_compress_O1(in, in_size, out+c_meta_len, out_size);
+                r=arith_compress_O1(in, in_size, out+c_meta_len, out_size);
             else
-                arith_compress_O0(in, in_size, out+c_meta_len, out_size);
+                r=arith_compress_O0(in, in_size, out+c_meta_len, out_size);
+        }
+
+        if (!r) {
+            free(rle);
+            free(packed);
+            *out_size = 0;
+            return NULL;
         }
     }
 
     if (*out_size >= in_size) {
         out[0] &= ~(3|X_EXT); // no entropy encoding, but keep e.g. PACK
         out[0] |= X_CAT | no_size;
+
+        if (out + c_meta_len + in_size > out_end) {
+            free(rle);
+            free(packed);
+            *out_size = 0;
+            return NULL;
+        }
         memcpy(out+c_meta_len, in, in_size);
         *out_size = in_size;
     }

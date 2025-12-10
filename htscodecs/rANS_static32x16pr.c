@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2021 Genome Research Ltd.
+ * Copyright (c) 2017-2023 Genome Research Ltd.
  * Author(s): James Bonfield
  *
  * Redistribution and use in source and binary forms, with or without
@@ -96,7 +96,6 @@ unsigned char *rans_compress_O0_32x16(unsigned char *in,
     // Compute statistics
     double e = hist8e(in, in_size, F);
     int low_ent = e < 2;
-    //hist8(in, in_size, F); int low_ent = 0;
 
     // Normalise so frequences sum to power of 2
     uint32_t fsum = in_size;
@@ -221,11 +220,11 @@ unsigned char *rans_compress_O0_32x16(unsigned char *in,
                 ptr16[-1] = rp[3-2]; ptr16 -= c2;
                 ptr16[-1] = rp[3-3]; ptr16 -= c3;
 #else
-                ((uint8_t *)&ptr16[-1])[0] = rp[3-0];
-                ((uint8_t *)&ptr16[-1])[1] = rp[3-0]>>8;
+                ((uint8_t *)&ptr16[-1])[0] = rp[3-2];
+                ((uint8_t *)&ptr16[-1])[1] = rp[3-2]>>8;
                 ptr16 -= c2;
-                ((uint8_t *)&ptr16[-1])[0] = rp[3-1];
-                ((uint8_t *)&ptr16[-1])[1] = rp[3-1]>>8;
+                ((uint8_t *)&ptr16[-1])[0] = rp[3-3];
+                ((uint8_t *)&ptr16[-1])[1] = rp[3-3]>>8;
                 ptr16 -= c3;
 #endif
                 rp[3-2] = c2 ? rp[3-2]>>16 : rp[3-2];
@@ -549,24 +548,32 @@ unsigned char *rans_uncompress_O1_32x16(unsigned char *in,
     unsigned char *c_freq = NULL;
     int i;
 
+    /*
+     * Somewhat complex memory layout.
+     * With shift==12 (TF_SHIFT_O1) we fill out use both sfb and fb.
+     * With shift==10 (...O1_FAST)  we fill out and use s3 only.
+     *
+     * sfb+fb is larger, therefore we allocate this much memory.
+     */
     uint8_t *sfb_ = htscodecs_tls_alloc(256*
-                                        ((TOTFREQ_O1+256)*sizeof(*sfb_)
-                                         +TOTFREQ_O1_FAST * sizeof(uint32_t)
+                                        ((TOTFREQ_O1+MAGIC2)*sizeof(*sfb_)
                                          +256 * sizeof(fb_t)));
     if (!sfb_)
         return NULL;
-    uint32_t (*s3)[TOTFREQ_O1_FAST] = (uint32_t (*)[TOTFREQ_O1_FAST])
-        (sfb_+(TOTFREQ_O1+256)*sizeof(*sfb_));
-    fb_t (*fb)[256] = (fb_t (*)[256])
-        ((uint8_t *)s3 + 256*TOTFREQ_O1_FAST*sizeof(uint32_t));
-    uint8_t *sfb[256];
+
+    // sfb and fb are consecutive
+    uint8_t *sfb[257];
     if ((*cp >> 4) == TF_SHIFT_O1) {
-        for (i = 0; i < 256; i++)
+        for (i = 0; i <= 256; i++)
             sfb[i]=  sfb_ + i*(TOTFREQ_O1+MAGIC2);
     } else {
-        for (i = 0; i < 256; i++)
+        for (i = 0; i <= 256; i++)
             sfb[i]=  sfb_ + i*(TOTFREQ_O1_FAST+MAGIC2);
     }
+    fb_t (*fb)[256] = (fb_t (*)[256]) sfb[256];
+
+    // NOTE: s3 overlaps sfb/fb
+    uint32_t (*s3)[TOTFREQ_O1_FAST] = (uint32_t (*)[TOTFREQ_O1_FAST])sfb_;
 
     if (!out)
         out_free = out = malloc(out_sz);
@@ -584,7 +591,7 @@ unsigned char *rans_uncompress_O1_32x16(unsigned char *in,
         uint32_t u_freq_sz, c_freq_sz;
         cp += var_get_u32(cp, cp_end, &u_freq_sz);
         cp += var_get_u32(cp, cp_end, &c_freq_sz);
-        if (c_freq_sz >= cp_end - cp - 16)
+        if (c_freq_sz > cp_end - cp)
             goto err;
         tab_end = cp + c_freq_sz;
         if (!(c_freq = rans_uncompress_O0_4x16(cp, c_freq_sz, NULL,u_freq_sz)))

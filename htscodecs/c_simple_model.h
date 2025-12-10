@@ -60,15 +60,10 @@
 #ifndef C_SIMPLE_MODEL_H
 #define C_SIMPLE_MODEL_H
 
-#ifndef MAX_FREQ
-#    define MAX_FREQ (1<<16)-17
-#endif
+#define MAX_FREQ (1<<16)-17
 #define PASTE3(a,b,c) a##b##c
 #define SIMPLE_MODEL(a,b) PASTE3(SIMPLE_MODEL,a,b)
-#ifndef STEP
-#    define STEP 16
-#endif
-
+#define STEP 16
 typedef struct {
     uint16_t Freq;
     uint16_t Symbol;
@@ -119,21 +114,13 @@ static inline void SIMPLE_MODEL(NSYM,_normalize)(SIMPLE_MODEL(NSYM,_) *m) {
     }
 }
 
-#ifdef __SSE__
-#   include <xmmintrin.h>
-#else
-#   define _mm_prefetch(a,b)
-#endif
-
 static inline void SIMPLE_MODEL(NSYM,_encodeSymbol)(SIMPLE_MODEL(NSYM,_) *m,
                                                     RangeCoder *rc, uint16_t sym) {
     SymFreqs *s = m->F;
     uint32_t AccFreq  = 0;
 
-    while (s->Symbol != sym) {
+    while (s->Symbol != sym)
         AccFreq += s++->Freq;
-        _mm_prefetch((const char *)(s+1), _MM_HINT_T0);
-    }
 
     RC_Encode(rc, AccFreq, s->Freq, m->TotFreq);
     s->Freq    += STEP;
@@ -159,7 +146,7 @@ static inline uint16_t SIMPLE_MODEL(NSYM,_decodeSymbol)(SIMPLE_MODEL(NSYM,_) *m,
         return 0; // error
 
     for (AccFreq = 0; (AccFreq += s->Freq) <= freq; s++)
-        _mm_prefetch((const char *)s, _MM_HINT_T0);
+        ;
     if (s - m->F > NSYM)
         return 0; // error
 
