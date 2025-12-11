@@ -457,7 +457,8 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
     int total_size = 0;
     
     int l = 0;
-    
+    int record_size = 0;
+
     // Process buffered record from previous block if we have one
     if (have_buffered) {
         have_buffered = 0;
@@ -468,7 +469,7 @@ fastq *load_seqs_kseq(gzFile fp, int blk_size, int *eof_flag) {
     while ((l = kseq_read(seq)) >= 0) {
     process_record:
         // Check if we would exceed block size
-        int record_size = seq->name.l + 1 + seq->seq.l + seq->qual.l;
+        record_size = seq->name.l + 1 + seq->seq.l + seq->qual.l;
         if (total_size > 0 && total_size + record_size > blk_size) {
             // Block is full - buffer this record for next block
             have_buffered = 1;
@@ -667,7 +668,8 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
     int total_size = 0;
     
     int l1 = 0, l2 = 0;
-    
+    int record_size1 = 0, record_size2 = 0;
+
     // Process buffered record pair from previous block if we have one
     if (have_buffered) {
         have_buffered = 0;
@@ -698,8 +700,8 @@ fastq *load_seqs_interleaved(gzFile fp1, gzFile fp2, int blk_size, int *eof_flag
         
     process_pair:
         // Check if we would exceed block size with both reads
-        int record_size1 = seq1->name.l + 1 + seq1->seq.l + seq1->qual.l;
-        int record_size2 = seq2->name.l + 1 + seq2->seq.l + seq2->qual.l;
+        record_size1 = seq1->name.l + 1 + seq1->seq.l + seq1->qual.l;
+        record_size2 = seq2->name.l + 1 + seq2->seq.l + seq2->qual.l;
         if (total_size > 0 && total_size + record_size1 + record_size2 > blk_size) {
             // Block is full - buffer this pair for next block
             have_buffered = 1;
