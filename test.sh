@@ -356,6 +356,38 @@ for level in 5 7 9; do
     verify_identical test_data/regression_srr1238539.fastq "$TEST_DIR/regression_srr_${level}.fastq" "SRR1238539 pattern regression test (level -$level)"
 done
 
+echo "=========================================="
+echo "FASTA File Tests"
+echo "=========================================="
+
+# Test 1: Single FASTA file roundtrip
+echo "Test: Single FASTA file roundtrip"
+./fqzcomp5 -V test_data/sample.fasta "$TEST_DIR/test_fasta.fqz5" > /dev/null 2>&1
+./fqzcomp5 -V -d "$TEST_DIR/test_fasta.fqz5" "$TEST_DIR/sample_fasta_out.fasta" > /dev/null 2>&1
+verify_identical "test_data/sample.fasta" "$TEST_DIR/sample_fasta_out.fasta" "Single FASTA roundtrip"
+
+# Test 2: Paired FASTA files roundtrip
+echo "Test: Paired FASTA files roundtrip"
+./fqzcomp5 -V test_data/paired_R1.fasta test_data/paired_R2.fasta "$TEST_DIR/paired_fasta.fqz5" > /dev/null 2>&1
+./fqzcomp5 -V -d "$TEST_DIR/paired_fasta.fqz5" "$TEST_DIR/paired_R1_out.fasta" "$TEST_DIR/paired_R2_out.fasta" > /dev/null 2>&1
+verify_identical "test_data/paired_R1.fasta" "$TEST_DIR/paired_R1_out.fasta" "Paired FASTA R1 roundtrip"
+verify_identical "test_data/paired_R2.fasta" "$TEST_DIR/paired_R2_out.fasta" "Paired FASTA R2 roundtrip"
+
+# Test 3: FASTA with different compression levels
+echo "Test: FASTA compression levels"
+for level in 1 3 5 7 9; do
+    ./fqzcomp5 -V -$level test_data/sample.fasta "$TEST_DIR/test_fasta_$level.fqz5" > /dev/null 2>&1
+    ./fqzcomp5 -V -d "$TEST_DIR/test_fasta_$level.fqz5" "$TEST_DIR/sample_fasta_$level.fasta" > /dev/null 2>&1
+    verify_identical "test_data/sample.fasta" "$TEST_DIR/sample_fasta_$level.fasta" "FASTA level -$level"
+done
+
+# Test 4: Verify FASTQ still works (regression test)
+echo "Test: FASTQ regression test"
+./fqzcomp5 -V test_data/sample.fastq "$TEST_DIR/test_fastq.fqz5" > /dev/null 2>&1
+./fqzcomp5 -V -d "$TEST_DIR/test_fastq.fqz5" "$TEST_DIR/sample_fastq_out.fastq" > /dev/null 2>&1
+verify_identical "test_data/sample.fastq" "$TEST_DIR/sample_fastq_out.fastq" "FASTQ regression test"
+
+
 echo ""
 echo "======================================"
 echo "Test Summary"
@@ -369,3 +401,5 @@ else
     echo -e "${GREEN}All tests passed!${NC}"
     exit 0
 fi
+
+echo ""
