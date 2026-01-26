@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential zlib1g-dev libbz2-dev
+        
+    - name: Build fqzcomp5
+      run: make
+      
+    - name: Verify binary was created
+      run: |
+        if [ ! -f "./fqzcomp5" ]; then
+          echo "Error: fqzcomp5 binary not found"
+          exit 1
+        fi
+        ls -lh fqzcomp5
+        
+    - name: Run comprehensive test suite
+      run: ./test.sh
+      
+    - name: Run error handling tests
+      run: ./test_error_handling.sh
+      
+    - name: Test basic compression and decompression
+      run: |
+        ./fqzcomp5 -3 test_data/sample.fastq /tmp/test_output.fqz5
+        ./fqzcomp5 -d /tmp/test_output.fqz5 /tmp/test_decompressed.fastq
+        diff test_data/sample.fastq /tmp/test_decompressed.fastq
+        echo "Basic compression/decompression test passed"
