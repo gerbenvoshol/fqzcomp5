@@ -31,10 +31,10 @@ jobs:
         ls -lh fqzcomp5
         
     - name: Run comprehensive test suite
-      run: ./test.sh
+      run: bash ./test.sh
       
     - name: Run error handling tests
-      run: ./test_error_handling.sh
+      run: bash ./test_error_handling.sh
       
     - name: Test basic compression and decompression
       run: |
