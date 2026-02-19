@@ -11,9 +11,12 @@ LIBS = -lz -lm -lbz2 -pthread
 DEBUG_CFLAGS = -g -O0 -Wall
 DEBUG_LDFLAGS =  # Empty: debug builds use no special linker flags
 
-# Static build flags  
+# Static build flags
 STATIC_LDFLAGS = -static
 STATIC_BUILD_LDFLAGS = -Wl,-O1 -Wl,--as-needed $(STATIC_LDFLAGS)
+
+# Portable flags for static builds (run on a wide range of Intel/AMD x86-64 CPUs)
+PORTABLE_CFLAGS = -march=x86-64 -mtune=generic
 
 # Main fqzcomp5 objects
 FQZCOMP5_OBJ = fqzcomp5.o lzp16e.o thread_pool.o
@@ -73,6 +76,7 @@ fqzcomp5-debug: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
 
 # Static build (statically linked executable)
 # Note: Run 'make clean' first when switching between build types
+static: CFLAGS = $(filter-out -march=native -mtune=native,$(CFLAGS)) $(PORTABLE_CFLAGS)
 static: LDFLAGS = $(STATIC_BUILD_LDFLAGS)
 static: fqzcomp5-static
 
@@ -81,7 +85,7 @@ fqzcomp5-static: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
 
 # Debug static build (debug symbols + statically linked, no linker optimizations)
 # Note: Run 'make clean' first when switching between build types
-debug-static: CFLAGS = $(DEBUG_CFLAGS)
+debug-static: CFLAGS = $(DEBUG_CFLAGS) $(PORTABLE_CFLAGS)
 debug-static: LDFLAGS = $(DEBUG_LDFLAGS) $(STATIC_LDFLAGS)  # No -Wl,-O1 for easier debugging
 debug-static: fqzcomp5-debug-static
 
