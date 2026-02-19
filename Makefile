@@ -3,7 +3,11 @@ all: fqzcomp5
 # Compiler and flags
 CC ?= gcc
 INCLUDES = -I.
-CFLAGS = -O3 -Wall -march=native -mtune=native -ffast-math -funroll-loops -fomit-frame-pointer
+
+# Base build flags (default: optimized for the build machine)
+BASE_CFLAGS = -O3 -Wall -march=native -mtune=native -ffast-math -funroll-loops -fomit-frame-pointer
+CFLAGS = $(BASE_CFLAGS)
+
 LDFLAGS = -Wl,-O1 -Wl,--as-needed
 LIBS = -lz -lm -lbz2 -pthread
 
@@ -15,7 +19,7 @@ DEBUG_LDFLAGS =  # Empty: debug builds use no special linker flags
 STATIC_LDFLAGS = -static
 STATIC_BUILD_LDFLAGS = -Wl,-O1 -Wl,--as-needed $(STATIC_LDFLAGS)
 
-# Portable flags for static builds (run on a wide range of Intel/AMD x86-64 CPUs)
+# Portable flags for static builds (wide x86-64 Intel/AMD compatibility)
 PORTABLE_CFLAGS = -march=x86-64 -mtune=generic
 
 # Main fqzcomp5 objects
@@ -74,16 +78,16 @@ debug: fqzcomp5-debug
 fqzcomp5-debug: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
 	$(CC) $(LDFLAGS) $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ) -o $@ $(LIBS)
 
-# Static build (statically linked executable)
+# Static build (statically linked executable, portable CPU flags)
 # Note: Run 'make clean' first when switching between build types
-static: CFLAGS = $(filter-out -march=native -mtune=native,$(CFLAGS)) $(PORTABLE_CFLAGS)
+static: CFLAGS = $(filter-out -march=native -mtune=native,$(BASE_CFLAGS)) $(PORTABLE_CFLAGS)
 static: LDFLAGS = $(STATIC_BUILD_LDFLAGS)
 static: fqzcomp5-static
 
 fqzcomp5-static: $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ)
 	$(CC) $(LDFLAGS) $(FQZCOMP5_OBJ) $(ALL_HTSCODECS_OBJ) -o $@ $(LIBS)
 
-# Debug static build (debug symbols + statically linked, no linker optimizations)
+# Debug static build (debug symbols + statically linked, portable CPU flags, no linker optimizations)
 # Note: Run 'make clean' first when switching between build types
 debug-static: CFLAGS = $(DEBUG_CFLAGS) $(PORTABLE_CFLAGS)
 debug-static: LDFLAGS = $(DEBUG_LDFLAGS) $(STATIC_LDFLAGS)  # No -Wl,-O1 for easier debugging
